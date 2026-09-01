@@ -1,6 +1,6 @@
 # CLI Audio Capture & Asset Pipeline
 
-Modular, object-oriented boilerplate for recording, filtering, reviewing, and
+Modular, object-oriented for recording, filtering, reviewing, and
 archiving audio assets with a structured text index.
 
 ## Features
