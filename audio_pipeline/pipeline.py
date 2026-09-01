@@ -29,6 +29,14 @@ class AudioPipeline:
         Maximum number of noise-reduction passes before auto-commit.
     aggressive_prop : float
         ``prop_decrease`` used for the aggressive second pass.
+    audio_dir : Optional[str]
+        Directory for ``.mp3`` files; defaults to the output dir.
+    input_device : Optional[Union[int, str]]
+        Sound device for capture; ``None`` uses the default.
+    start_number : int
+        Floor for auto-incrementing new word numbers.
+    prefix_length : int
+        Number of leading letters used to group index sections.
     """
 
     def __init__(
@@ -39,6 +47,7 @@ class AudioPipeline:
         audio_dir: Optional[str] = None,
         input_device: Optional[Union[int, str]] = None,
         start_number: int = 1,
+        prefix_length: int = 2,
     ) -> None:
         self.config: RecordingConfig = config
         self.max_passes: int = filter_passes
@@ -57,6 +66,7 @@ class AudioPipeline:
             audio_dir=audio_dir,
             sample_rate=config.sample_rate,
             start_number=start_number,
+            prefix_length=prefix_length,
         )
 
     # ------------------------------------------------------------------

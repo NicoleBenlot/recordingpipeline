@@ -63,6 +63,9 @@ class Settings:
     index_start_number : int
         Number where auto-increment begins (floor for new words when
         extracting/continuing an existing library).
+    index_prefix_length : int
+        Number of leading letters used to group words into index sections
+        (default 2, e.g. ``siya`` → ``[si]``).
     """
 
     output_dir: str = "./recordings"
@@ -79,6 +82,7 @@ class Settings:
     mp3_bitrate: str = "192k"
     log_level: str = "INFO"
     index_start_number: int = 1
+    index_prefix_length: int = 2
     _extra: dict = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------
@@ -182,5 +186,8 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         log_level=getenv("LOG_LEVEL", "INFO"),
         index_start_number=_as_int(
             getenv("INDEX_START_NUMBER", "1"), 1
+        ),
+        index_prefix_length=_as_int(
+            getenv("INDEX_PREFIX_LENGTH", "2"), 2
         ),
     )

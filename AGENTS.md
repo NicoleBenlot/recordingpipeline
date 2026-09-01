@@ -35,22 +35,23 @@ Each concern is one module under `audio_pipeline/`:
 - `ARTIFACT_ROOT` (absolute, takes precedence) or `OUTPUT_DIR` sets the index destination.
 - `AUDIO_SUBDIR` puts `.mp3` in a subfolder; the index stays at the root.
 - `INDEX_FILENAME` names the index file (e.g. `index.txt`).
+- `INDEX_START_NUMBER` sets where auto-increment begins; `INDEX_PREFIX_LENGTH` (default 2) sets section grouping width.
 
 ## Index format (critical — do not regress)
 
-`index.txt` is INI-style, grouped by first letter of the word, mapping each word
-to the numeric stem of its audio file:
+`index.txt` is INI-style, grouped by a lowercase prefix of the word (default
+2 letters), mapping each word to the numeric stem of its audio file:
 
 ```ini
-[s]
+[si]
 sa = 9
 siya = 10
 ```
 
 Meaning `siya` is stored as `10.mp3`. Rules:
-- Each entry is `word = number` under a `[letter]` section.
+- Each entry is `word = number` under a `[prefix]` section (prefix length = `INDEX_PREFIX_LENGTH`, default 2).
 - Words sorted alphabetically within each section; sections sorted.
-- Numbers auto-increment globally (`max+1`); **re-recording a word reuses its number**.
+- Numbers auto-increment globally (`max+1`), starting at `INDEX_START_NUMBER`; **re-recording a word reuses its number**.
 - NOT JSONL — an earlier version used JSONL; keep the INI format.
 
 ## Archiver sequencing (order matters)
@@ -63,3 +64,11 @@ Meaning `siya` is stored as `10.mp3`. Rules:
 Number must be resolved and the mp3 saved before `register_word`. Do not batch
 `number_for_word` calls ahead of `register_word` — each reloads the file, so
 unpersisted increments cancel out.
+
+## GUI (gui.py)
+
+`PipelineApp` (Tkinter, launched via `--gui`) exposes a **Clean recordings**
+button that calls `AudioArchiver.clean()` (deletes indexed `.mp3` files and the
+index). The **Start numbering at** field updates `archiver.start_number` — read
+it from the UI variable and push it to the archiver before any
+`number_for_word`/`clean` call (see `_apply_start_number`).

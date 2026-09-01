@@ -10,11 +10,11 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 
-from .config import Settings, load_settings
+from .config import Settings
 from .recorder import AudioRecorder
 from .filter import AudioFilter
 from .archiver import AudioArchiver
@@ -51,6 +51,7 @@ class PipelineApp:
             mp3_bitrate=settings.mp3_bitrate,
             sample_rate=settings.sample_rate,
             start_number=settings.index_start_number,
+            prefix_length=settings.index_prefix_length,
         )
         self._start_number_base: int = settings.index_start_number
 
@@ -78,6 +79,26 @@ class PipelineApp:
             row=0, column=1, columnspan=2, sticky="we", padx=6
         )
 
+        # ---- Start numbering at --------------------------------------
+        ttk.Label(
+            main, text="Start numbering at:"
+        ).grid(row=1, column=0, sticky="w", pady=(12, 0))
+        self.start_number_var = tk.StringVar(
+            value=str(self._start_number_base)
+        )
+        self.start_number_entry = ttk.Entry(
+            main, textvariable=self.start_number_var, width=8
+        )
+        self.start_number_entry.grid(
+            row=1, column=1, sticky="w", padx=6, pady=(12, 0)
+        )
+        self.start_hint = ttk.Label(
+            main,
+            text="New words auto-increment from here.",
+            foreground="#666",
+        )
+        self.start_hint.grid(row=1, column=2, sticky="w", pady=(12, 0))
+
         # ---- Duration mode --------------------------------------------
         self.fixed_mode = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -85,7 +106,7 @@ class PipelineApp:
             text="Fixed duration (seconds)",
             variable=self.fixed_mode,
             command=self._on_mode_toggle,
-        ).grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=2, column=0, sticky="w", pady=(12, 0))
 
         self.duration_var = tk.StringVar(
             value=str(self.settings.duration_seconds)
@@ -93,14 +114,14 @@ class PipelineApp:
         self.duration_entry = ttk.Entry(
             main, textvariable=self.duration_var, width=8
         )
-        self.duration_entry.grid(row=1, column=1, sticky="w", padx=6, pady=(10, 0))
+        self.duration_entry.grid(row=2, column=1, sticky="w", padx=6, pady=(12, 0))
         self.duration_entry.state(["disabled"])
         self.mode_hint = ttk.Label(
             main,
             text="Tap Record to start, tap again to stop (freeform).",
             foreground="#666",
         )
-        self.mode_hint.grid(row=1, column=2, sticky="w", pady=(10, 0))
+        self.mode_hint.grid(row=2, column=2, sticky="w", pady=(12, 0))
 
         # ---- Big Record button ----------------------------------------
         self.record_btn = ttk.Button(
@@ -109,21 +130,21 @@ class PipelineApp:
             command=self._on_record_click,
             width=20,
         )
-        self.record_btn.grid(row=2, column=0, columnspan=3, pady=16)
+        self.record_btn.grid(row=3, column=0, columnspan=3, pady=16)
 
         self.timer_label = ttk.Label(
             main, text="00:00.0", font=("Consolas", 22)
         )
-        self.timer_label.grid(row=3, column=0, columnspan=3)
+        self.timer_label.grid(row=4, column=0, columnspan=3)
 
         self.status_label = ttk.Label(
             main, text="Ready.", foreground="#555"
         )
-        self.status_label.grid(row=4, column=0, columnspan=3, pady=(6, 0))
+        self.status_label.grid(row=5, column=0, columnspan=3, pady=(6, 0))
 
         # ---- Review controls -------------------------------------------
         review = ttk.Frame(main)
-        review.grid(row=5, column=0, columnspan=3, pady=(18, 0))
+        review.grid(row=6, column=0, columnspan=3, pady=(18, 0))
 
         self.play_btn = ttk.Button(
             review, text="Play", command=self._on_play_click
@@ -149,14 +170,19 @@ class PipelineApp:
                        self.discard_btn):
             widget.state(["disabled"])
 
-        # Where assets land
-        ttk.Separator(main).grid(row=6, column=0, columnspan=3,
+        # Where assets land + clean button
+        ttk.Separator(main).grid(row=7, column=0, columnspan=3,
                                  sticky="we", pady=12)
         ttk.Label(
             main,
             text=f"→ {self.settings.resolved_audio_dir}",
             foreground="#888",
-        ).grid(row=7, column=0, columnspan=3, sticky="w")
+        ).grid(row=8, column=0, columnspan=2, sticky="w")
+
+        self.clean_btn = ttk.Button(
+            main, text="Clean recordings", command=self._on_clean_click
+        )
+        self.clean_btn.grid(row=8, column=2, sticky="e")
 
     # ------------------------------------------------------------------
     def _on_mode_toggle(self) -> None:
@@ -327,6 +353,8 @@ class PipelineApp:
         if not word:
             messagebox.showwarning("Missing word", "Enter the word to record.")
             return
+        # Apply the start-number the user set in the field.
+        self._apply_start_number()
         try:
             number: int = self.archiver.number_for_word(word)
             self.archiver.save_as_mp3(self.current_audio, str(number))
@@ -336,6 +364,36 @@ class PipelineApp:
             messagebox.showerror("Save failed", str(exc))
             return
         self._set_status(f"Saved '{word}' → {number}.mp3", "#0a0")
+        self.current_audio = None
+        self._disable_review()
+        self.timer_label.config(text="00:00.0")
+
+    # ------------------------------------------------------------------
+    def _apply_start_number(self) -> None:
+        """Read the start-number field and push it onto the archiver.
+
+        Parses the user input; on invalid input, resets the field to the
+        last known-good value.
+        """
+        try:
+            self.archiver.start_number = int(self.start_number_var.get())
+        except ValueError:
+            self.start_number_var.set(str(self.archiver.start_number))
+
+    # ------------------------------------------------------------------
+    def _on_clean_click(self) -> None:
+        """Delete recorded audio files and reset the index (with confirm)."""
+        if not messagebox.askyesno(
+            "Clean recordings",
+            "Delete all recorded audio files and reset the index?\n\n"
+            f"Folder: {self.settings.resolved_audio_dir}",
+        ):
+            return
+        self._apply_start_number()
+        removed: int = self.archiver.clean()
+        self.status_label.config(
+            text=f"Cleaned {removed} file(s). Index reset.", foreground="#555"
+        )
         self.current_audio = None
         self._disable_review()
         self.timer_label.config(text="00:00.0")

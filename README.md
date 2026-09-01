@@ -73,11 +73,14 @@ python -m audio_pipeline --gui
 
 In the GUI:
 - Enter the **word** to record.
+- Set **Start numbering at** to control where auto-increment begins.
 - Tap **Record** to start and tap **Record (Stop)** again to finish (freeform
   duration with a live timer), or check **Fixed duration** to record a set
   number of seconds.
 - **Play** to hear the take, **Denoise** to apply noise reduction, then
   **Save** (writes `<n>.mp3` + index) or **Discard**.
+- **Clean recordings** deletes all captured audio files and resets the index
+  (with a confirmation prompt).
 
 More commands: `python -m audio_pipeline --help`, `--list-devices`.
 
@@ -97,29 +100,32 @@ More commands: `python -m audio_pipeline --help`, `--list-devices`.
 # destination root (ARTIFACT_ROOT / OUTPUT_DIR)
 ├── audio/               # .mp3 files go here (if AUDIO_SUBDIR=audio)
 │   └── 5.mp3            # numeric-named asset, e.g. 5.mp3 for `siya`
-└── index.txt            # word→number index (grouped by first letter)
+└── index.txt            # word→number index (grouped by 2-letter prefix)
 ```
 
 ## Index format
 
-`index.txt` is an INI-style text file grouping each recorded word by its first
-letter and mapping it to the numeric stem of its audio file:
+`index.txt` is an INI-style text file grouping each recorded word by a
+2-letter lowercase prefix and mapping it to the numeric stem of its audio file:
 
 ```ini
-[a]
+[ak]
 ako = 4
 
-[k]
+[ko]
 ko = 5
 
-[s]
+[si]
 sa = 9
 siya = 5
 ```
 
 - **`siya = 5`** means the word "siya" is stored as `5.mp3`.
-- Numbers auto-increment globally; re-recording the same word reuses its number.
-- Words are sorted alphabetically within each letter section.
+- Sections use the first `INDEX_PREFIX_LENGTH` letters (default 2).
+- Numbers auto-increment globally; `INDEX_START_NUMBER` sets the starting
+  value (useful when continuing an existing library). Re-recording the same
+  word reuses its number.
+- Words are sorted alphabetically within each section.
 
 ## Project structure
 

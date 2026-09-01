@@ -73,6 +73,8 @@ class AudioArchiver:
         Sample rate for WAV intermediate conversion.
     start_number : int
         Number where auto-increment begins when numbering new words.
+    prefix_length : int
+        Number of leading letters used to group words into index sections.
     """
 
     def __init__(
@@ -83,6 +85,7 @@ class AudioArchiver:
         mp3_bitrate: str = "192k",
         sample_rate: int = 44_100,
         start_number: int = 1,
+        prefix_length: int = 2,
     ) -> None:
         self.output_dir: Path = Path(output_dir)
         self.audio_dir: Path = Path(audio_dir) if audio_dir else self.output_dir
@@ -90,6 +93,7 @@ class AudioArchiver:
         self.mp3_bitrate: str = mp3_bitrate
         self.sample_rate: int = sample_rate
         self.start_number: int = start_number
+        self.prefix_length: int = prefix_length
         ensure_ffmpeg_on_path()
         self._ensure_directory(self.output_dir)
         self._ensure_directory(self.audio_dir)
@@ -162,7 +166,9 @@ class AudioArchiver:
             Parsed index using this archiver's ``start_number`` as the
             numbering floor.
         """
-        return AudioIndex.from_file(self.index_path, self.start_number)
+        return AudioIndex.from_file(
+            self.index_path, self.start_number, self.prefix_length
+        )
 
     # ------------------------------------------------------------------
     def number_for_word(self, word: str) -> int:
@@ -194,9 +200,10 @@ class AudioArchiver:
             The audio number already assigned to this word.
         """
         index: AudioIndex = self._load_index()
-        index.words.setdefault(word.strip().lower()[0], {})[
-            word.strip().lower()
-        ] = number
+        word_lower: str = word.strip().lower()
+        index.words.setdefault(
+            word_lower[: self.prefix_length], {}
+        )[word_lower] = number
         index.save(self.index_path)
         logger.info("Registered word '%s' → %d", word.strip().lower(), number)
 

@@ -113,6 +113,7 @@ def main() -> int:
         audio_dir=str(settings.resolved_audio_dir),
         input_device=settings.input_device,
         start_number=settings.index_start_number,
+        prefix_length=settings.index_prefix_length,
     )
     result = pipeline.run()
     _print_result(result)

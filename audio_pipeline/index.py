@@ -1,15 +1,16 @@
 """Parsing and rendering of the word→audio index.
 
 The index is a human-readable, INI-style text file grouped by the first
-letter of each word::
+few letters (prefix) of each word::
 
-    [a]
+    [ak]
     ako = 3
-    [k]
+    [ko]
     ko = 8
 
 Each entry maps a spoken word to the numeric stem of its audio file
-(e.g. ``ako = 3`` means ``ako.mp3`` aliases ``3.mp3``).
+(e.g. ``ako = 3`` means ``ako.mp3`` aliases ``3.mp3``).  The prefix
+length is configurable (default 2 letters).
 """
 
 from __future__ import annotations
@@ -17,12 +18,12 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-# Matches a section header like "[s]"
-_SECTION_RE = re.compile(r"^\[(?P<key>[a-zA-Z0-9])\]\s*$")
+# Matches a section header like "[ak]" (1 or 2 letters/numbers)
+_SECTION_RE = re.compile(r"^\[(?P<key>[a-zA-Z0-9]{1,2})\]\s*$")
 # Matches an entry like "ako = 3"
 _ENTRY_RE = re.compile(r"^\s*(?P<word>.+?)\s*=\s*(?P<number>\d+)\s*$")
 
@@ -30,23 +31,30 @@ _ENTRY_RE = re.compile(r"^\s*(?P<word>.+?)\s*=\s*(?P<number>\d+)\s*$")
 class AudioIndex:
     """An in-memory model of the grouped word→audio-number index.
 
-    Words are grouped by their first character (lowercased).  Numbers are
-    tracked globally so new words auto-increment.
+    Words are grouped by a lowercase prefix (default 2 letters, e.g.
+    ``siya`` → ``[si]``).  Numbers are tracked globally so new words
+    auto-increment.
 
     Parameters
     ----------
     words : Dict[str, Dict[str, int]]
         Mapping of ``section -> {word: number}``.  Built by loading an
         existing index file, or empty for a fresh index.
+    start_number : int
+        Floor for auto-increment when numbering new words.
+    prefix_length : int
+        Number of leading letters used for the grouping key.
     """
 
     def __init__(
         self,
         words: Optional[Dict[str, Dict[str, int]]] = None,
         start_number: int = 1,
+        prefix_length: int = 2,
     ) -> None:
         self.words: Dict[str, Dict[str, int]] = words or {}
         self.start_number: int = start_number
+        self.prefix_length: int = prefix_length
 
     # ------------------------------------------------------------------
     @property
@@ -70,8 +78,8 @@ class AudioIndex:
         Parameters
         ----------
         word : str
-            Spoken word to index (case-insensitive, leading letter used
-            for the section).
+            Spoken word to index (case-insensitive; the leading
+            ``prefix_length`` characters form the section key).
 
         Returns
         -------
@@ -82,7 +90,7 @@ class AudioIndex:
         if not normalized:
             raise ValueError("Cannot index an empty word.")
 
-        section_key: str = normalized[0]
+        section_key: str = normalized[: self.prefix_length]
         section: Dict[str, int] = self.words.setdefault(section_key, {})
 
         # If the word was already indexed, reuse its number.
@@ -118,7 +126,7 @@ class AudioIndex:
     # ------------------------------------------------------------------
     @classmethod
     def from_file(
-        cls, path: Path, start_number: int = 1
+        cls, path: Path, start_number: int = 1, prefix_length: int = 2
     ) -> "AudioIndex":
         """Parse an existing index file into an ``AudioIndex``.
 
@@ -128,6 +136,8 @@ class AudioIndex:
             Path to the index text file.
         start_number : int
             Floor for auto-increment when numbering new words.
+        prefix_length : int
+            Number of leading letters used for the grouping key.
 
         Returns
         -------
@@ -136,7 +146,7 @@ class AudioIndex:
         """
         words: Dict[str, Dict[str, int]] = {}
         if not path.exists():
-            return cls(words, start_number)
+            return cls(words, start_number, prefix_length)
 
         current_section: Optional[str] = None
         try:
@@ -161,7 +171,7 @@ class AudioIndex:
             logger.error("Failed to read index %s: %s", path, exc)
             raise
 
-        return cls(words, start_number)
+        return cls(words, start_number, prefix_length)
 
     # ------------------------------------------------------------------
     def save(self, path: Path) -> None:
