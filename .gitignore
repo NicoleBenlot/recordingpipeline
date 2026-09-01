@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local secrets / config
+.env
+.env.local
+
+# Recording / archive artifacts
+recordings/
+*.mp3
+*.wav
+*.flac
+*.ogg
+
+# Index output
+audio_index.txt
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
