@@ -15,6 +15,15 @@ from .recorder import AudioRecorder
 from .pipeline import AudioPipeline, _print_result
 
 
+def _ensure_utf8() -> None:
+    """Force UTF-8 I/O so Unicode glyphs render on Windows consoles."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass  # non-text or pre-3.7 streams
+
+
 def _build_config(settings: Settings) -> RecordingConfig:
     """Build a ``RecordingConfig`` from loaded settings.
 
@@ -47,6 +56,7 @@ def main() -> int:
     int
         Process exit code (0 = success, 1 = failure).
     """
+    _ensure_utf8()
     settings: Settings = load_settings()
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
