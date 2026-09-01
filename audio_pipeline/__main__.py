@@ -7,12 +7,14 @@ and runs the orchestrated pipeline with a user-friendly mock setup.
 from __future__ import annotations
 
 import sys
+import argparse
 import logging
 
 from .config import load_settings, Settings
 from .models import RecordingConfig
 from .recorder import AudioRecorder
 from .pipeline import AudioPipeline, _print_result
+from . import _GUI_AVAILABLE, PipelineApp
 
 
 def _ensure_utf8() -> None:
@@ -49,13 +51,29 @@ def _build_config(settings: Settings) -> RecordingConfig:
 
 
 def main() -> int:
-    """Run the demo pipeline.
+    """Run the demo pipeline or launch the GUI.
 
     Returns
     -------
     int
         Process exit code (0 = success, 1 = failure).
     """
+    parser = argparse.ArgumentParser(
+        prog="audio_pipeline",
+        description="Audio capture & asset pipeline.",
+    )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Launch the Tkinter GUI instead of the CLI.",
+    )
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="Print available audio devices and exit.",
+    )
+    args = parser.parse_args()
+
     _ensure_utf8()
     settings: Settings = load_settings()
     logging.basicConfig(
@@ -63,6 +81,18 @@ def main() -> int:
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+
+    if args.list_devices:
+        AudioRecorder.list_devices()
+        return 0
+
+    if args.gui:
+        if not (_GUI_AVAILABLE and PipelineApp is not None):
+            print("Tkinter unavailable – cannot launch GUI.", file=sys.stderr)
+            return 1
+        app = PipelineApp(settings)
+        app.run()
+        return 0
 
     print("╔══════════════════════════════════════════════╗")
     print("║   CLI Audio Capture & Asset Pipeline        ║")
@@ -82,6 +112,7 @@ def main() -> int:
         config=config,
         audio_dir=str(settings.resolved_audio_dir),
         input_device=settings.input_device,
+        start_number=settings.index_start_number,
     )
     result = pipeline.run()
     _print_result(result)

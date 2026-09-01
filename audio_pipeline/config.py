@@ -60,6 +60,9 @@ class Settings:
         Target MP3 bitrate (e.g. ``"192k"``).
     log_level : str
         Logging level name.
+    index_start_number : int
+        Number where auto-increment begins (floor for new words when
+        extracting/continuing an existing library).
     """
 
     output_dir: str = "./recordings"
@@ -75,6 +78,7 @@ class Settings:
     max_filter_passes: int = 2
     mp3_bitrate: str = "192k"
     log_level: str = "INFO"
+    index_start_number: int = 1
     _extra: dict = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------
@@ -176,4 +180,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         ),
         mp3_bitrate=getenv("MP3_BITRATE", "192k"),
         log_level=getenv("LOG_LEVEL", "INFO"),
+        index_start_number=_as_int(
+            getenv("INDEX_START_NUMBER", "1"), 1
+        ),
     )

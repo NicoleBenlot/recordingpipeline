@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +14,40 @@ from pydub import AudioSegment
 from .index import AudioIndex
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def ensure_ffmpeg_on_path() -> bool:
+    """Locate an ``ffmpeg`` executable and add it to ``PATH``.
+
+    Checks the system ``PATH`` first; if missing, scans the WinGet
+    ``Gyan.FFmpeg`` install location (common on this machine) and prepends
+    its ``bin`` directory to the current process ``PATH``.
+
+    Returns
+    -------
+    bool
+        True if ``ffmpeg`` is available after this call.
+    """
+    if shutil.which("ffmpeg"):
+        return True
+
+    packages_root = (
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "Microsoft"
+        / "WinGet"
+        / "Packages"
+    )
+    if not packages_root.exists():
+        return False
+
+    for pkg in packages_root.glob("Gyan.FFmpeg_*"):
+        for build in pkg.glob("ffmpeg-*-full_build"):
+            bin_dir = build / "bin"
+            if (bin_dir / "ffmpeg.exe").exists():
+                os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ["PATH"]
+                logger.info("Added ffmpeg bin to PATH: %s", bin_dir)
+                return True
+    return False
 
 
 class AudioArchiver:
@@ -35,6 +71,8 @@ class AudioArchiver:
         Target MP3 bitrate (default ``"192k"``).
     sample_rate : int
         Sample rate for WAV intermediate conversion.
+    start_number : int
+        Number where auto-increment begins when numbering new words.
     """
 
     def __init__(
@@ -44,19 +82,58 @@ class AudioArchiver:
         index_filename: str = "audio_index.txt",
         mp3_bitrate: str = "192k",
         sample_rate: int = 44_100,
+        start_number: int = 1,
     ) -> None:
         self.output_dir: Path = Path(output_dir)
         self.audio_dir: Path = Path(audio_dir) if audio_dir else self.output_dir
         self.index_path: Path = self.output_dir / index_filename
         self.mp3_bitrate: str = mp3_bitrate
         self.sample_rate: int = sample_rate
+        self.start_number: int = start_number
+        ensure_ffmpeg_on_path()
         self._ensure_directory(self.output_dir)
         self._ensure_directory(self.audio_dir)
         logger.info(
-            "AudioArchiver initialised  index=%s  audio=%s",
+            "AudioArchiver initialised  index=%s  audio=%s  start=%d",
             self.output_dir,
             self.audio_dir,
+            self.start_number,
         )
+
+    # ------------------------------------------------------------------
+    def clean(self) -> int:
+        """Delete all indexed audio files and the index file.
+
+        Removes the ``.mp3`` files recorded so far (based on the index)
+        and deletes the index itself, leaving the directories in place.
+        Re-recorded words then start numbering fresh from
+        ``start_number``.
+
+        Returns
+        -------
+        int
+            Number of ``.mp3`` files removed.
+        """
+        removed: int = 0
+        index: AudioIndex = self._load_index()
+        for section in index.words.values():
+            for number in section.values():
+                audio_file: Path = self.audio_dir / f"{number}.mp3"
+                try:
+                    if audio_file.exists():
+                        audio_file.unlink()
+                        removed += 1
+                except OSError as exc:
+                    logger.error("Could not remove %s: %s", audio_file, exc)
+
+        try:
+            if self.index_path.exists():
+                self.index_path.unlink()
+        except OSError as exc:
+            logger.error("Could not remove index %s: %s", self.index_path, exc)
+
+        logger.info("Cleaned %d audio file(s) and reset index.", removed)
+        return removed
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -77,8 +154,15 @@ class AudioArchiver:
 
     # ------------------------------------------------------------------
     def _load_index(self) -> AudioIndex:
-        """Load the on-disk index (or an empty one if missing)."""
-        return AudioIndex.from_file(self.index_path)
+        """Load the on-disk index (or an empty one if missing).
+
+        Returns
+        -------
+        AudioIndex
+            Parsed index using this archiver's ``start_number`` as the
+            numbering floor.
+        """
+        return AudioIndex.from_file(self.index_path, self.start_number)
 
     # ------------------------------------------------------------------
     def number_for_word(self, word: str) -> int:

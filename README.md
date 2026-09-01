@@ -14,6 +14,8 @@ archiving audio assets with a structured text index.
   lines to `audio_index.txt`.
 - **AudioPipeline** — orchestrates *Record → Filter → Review → Archive* with an
   interactive confirmation loop (play / re-record / re-filter / save / discard).
+- **PipelineApp (GUI)** — Tkinter interface with tap-to-record / tap-again-to-stop,
+  adjustable length, playback, denoise, and save/discard (\`python -m audio_pipeline --gui\`).
 
 ## Requirements
 
@@ -61,9 +63,23 @@ You'll be prompted for the **word being recorded**, then for a short audio
 capture. On first run, list your input devices, then set `INPUT_DEVICE` in
 `.env` if the default isn't correct. Devices are always printed at startup.
 
-The `__main__` handler runs a mock capture with an interactive review panel. In
-production, wire your own configuration source (e.g. `argparse`, a config file,
-or a dashboard) into `AudioPipeline`.
+### GUI mode
+
+Launch a Tkinter UI with tap-to-record and adjustable length:
+
+```bash
+python -m audio_pipeline --gui
+```
+
+In the GUI:
+- Enter the **word** to record.
+- Tap **Record** to start and tap **Record (Stop)** again to finish (freeform
+  duration with a live timer), or check **Fixed duration** to record a set
+  number of seconds.
+- **Play** to hear the take, **Denoise** to apply noise reduction, then
+  **Save** (writes `<n>.mp3` + index) or **Discard**.
+
+More commands: `python -m audio_pipeline --help`, `--list-devices`.
 
 ### Interactive review keys
 
@@ -110,13 +126,14 @@ siya = 5
 ```
 audio_pipeline/         # package
 ├── __init__.py         # public exports + version
-├── __main__.py         # entry point (python -m audio_pipeline)
+├── __main__.py         # entry point (python -m audio_pipeline [--gui])
 ├── config.py           # Settings + .env loading (python-dotenv)
 ├── models.py           # RecordingConfig, PipelineResult
 ├── index.py            # AudioIndex (word→number parse/render)
-├── recorder.py         # AudioRecorder (sounddevice)
+├── recorder.py         # AudioRecorder (sounddevice, fixed + streaming)
 ├── filter.py           # AudioFilter (noisereduce)
 ├── archiver.py         # AudioArchiver (pydub + index)
+├── gui.py              # PipelineApp (Tkinter tap-to-record UI)
 └── pipeline.py         # AudioPipeline orchestrator
 
 .env.example            # sample configuration

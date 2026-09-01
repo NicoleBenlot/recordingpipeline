@@ -38,6 +38,7 @@ class AudioPipeline:
         aggressive_prop: float = 0.95,
         audio_dir: Optional[str] = None,
         input_device: Optional[Union[int, str]] = None,
+        start_number: int = 1,
     ) -> None:
         self.config: RecordingConfig = config
         self.max_passes: int = filter_passes
@@ -55,6 +56,7 @@ class AudioPipeline:
             output_dir=config.output_dir,
             audio_dir=audio_dir,
             sample_rate=config.sample_rate,
+            start_number=start_number,
         )
 
     # ------------------------------------------------------------------

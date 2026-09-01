@@ -40,14 +40,23 @@ class AudioIndex:
         existing index file, or empty for a fresh index.
     """
 
-    def __init__(self, words: Optional[Dict[str, Dict[str, int]]] = None) -> None:
+    def __init__(
+        self,
+        words: Optional[Dict[str, Dict[str, int]]] = None,
+        start_number: int = 1,
+    ) -> None:
         self.words: Dict[str, Dict[str, int]] = words or {}
+        self.start_number: int = start_number
 
     # ------------------------------------------------------------------
     @property
     def next_number(self) -> int:
-        """Return the next auto-increment number (max existing + 1)."""
-        highest: int = 0
+        """Return the next auto-increment number.
+
+        Starts at ``start_number`` (or higher if existing entries exceed
+        it) and advances by one from the highest number in use.
+        """
+        highest: int = self.start_number - 1
         for section in self.words.values():
             for number in section.values():
                 if number > highest:
@@ -108,13 +117,17 @@ class AudioIndex:
 
     # ------------------------------------------------------------------
     @classmethod
-    def from_file(cls, path: Path) -> "AudioIndex":
+    def from_file(
+        cls, path: Path, start_number: int = 1
+    ) -> "AudioIndex":
         """Parse an existing index file into an ``AudioIndex``.
 
         Parameters
         ----------
         path : Path
             Path to the index text file.
+        start_number : int
+            Floor for auto-increment when numbering new words.
 
         Returns
         -------
@@ -123,7 +136,7 @@ class AudioIndex:
         """
         words: Dict[str, Dict[str, int]] = {}
         if not path.exists():
-            return cls(words)
+            return cls(words, start_number)
 
         current_section: Optional[str] = None
         try:
@@ -148,7 +161,7 @@ class AudioIndex:
             logger.error("Failed to read index %s: %s", path, exc)
             raise
 
-        return cls(words)
+        return cls(words, start_number)
 
     # ------------------------------------------------------------------
     def save(self, path: Path) -> None:

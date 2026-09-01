@@ -7,11 +7,12 @@ audio words into numeric `.mp3` files with an INI-style index.
 
 - Install deps: `pip install -r requirements.txt`
 - Run: `python -m audio_pipeline` (it is a **package**, not a script — `python audio_pipeline.py` will not work)
+- GUI mode: `python -m audio_pipeline --gui` (Tkinter tap-to-record); `--list-devices` lists devices, `--help` for flags
 - No tests, lint, typecheck, or CI configured. Only sanity check: `python -m py_compile audio_pipeline\*.py` fails on Windows globbing — compile each file explicitly instead.
 
 ## Non-obvious setup / gotchas
 
-- **MP3 encoding needs `ffmpeg` on PATH** (pydub). Not listed in requirements. On this machine it's installed via WinGet at `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg_*\ffmpeg-9.0.1-full_build\bin`; a non-restarted shell may need that dir prepended to `$env:Path`.
+- **MP3 encoding needs `ffmpeg` on PATH** (pydub). Not listed in requirements. `ensure_ffmpeg_on_path()` in `archiver.py` auto-locates the WinGet `Gyan.FFmpeg` bin dir and prepends it to `PATH` on init, so it works from a fresh shell. On a non-WinGet install, ffmpeg must already be on PATH.
 - **Windows console defaults to cp1252** and crashes (`UnicodeEncodeError`) on the box-drawing glyphs in the CLI. `_ensure_utf8()` in `audio_pipeline/__main__.py` must run before any print.
 - **`__init__.py` eagerly imports every module**, so importing anything from the package requires all audio deps (sounddevice, numpy, noisereduce, pydub) to be installed.
 - `.env` is loaded via `python-dotenv` in `config.py`; `.env` is gitignored. Copy `.env.example` to `.env` to configure.
@@ -26,6 +27,7 @@ Each concern is one module under `audio_pipeline/`:
 - `pipeline.py` — `AudioPipeline` orchestrator: Record → Filter → Review → Archive
 - `config.py` — `Settings`/`load_settings` (.env)
 - `models.py` — `RecordingConfig`, `PipelineResult`
+- `gui.py` — `PipelineApp` (Tkinter tap-to-record UI); optional, guarded in `__init__.py`
 - `__main__.py` — entry point
 
 ## Storage layout (`.env`)
