@@ -50,27 +50,60 @@ def ensure_ffmpeg_on_path() -> bool:
     return False
 
 
+# Map a file extension (without dot) to the pydub ``format`` name.
+_FORMAT_ALIASES = {
+    "mp3": "mp3",
+    "opus": "opus",
+    "ogg": "ogg",
+    "oga": "ogg",
+    "wav": "wav",
+}
+
+
+def _normalise_format(audio_format: str) -> str:
+    """Return a canonical pydub-ready format for a file extension.
+
+    Parameters
+    ----------
+    audio_format : str
+        File extension / format, e.g. ``"mp3"``, ``"opus"`` or ``".ogg"``.
+
+    Returns
+    -------
+    str
+        The canonical format name used for the filename suffix and the
+        pydub ``format`` argument.
+    """
+    fmt: str = audio_format.strip().lower().lstrip(".")
+    return _FORMAT_ALIASES.get(fmt, fmt)
+
+
 class AudioArchiver:
-    """Converts NumPy buffers to compressed ``.mp3`` and manages storage.
+    """Converts NumPy buffers to compressed audio files and manages storage.
 
     Audio files are named by an auto-incrementing numeric stem
-    (e.g. ``5.mp3``), and each spoken word is recorded in ``index.txt``
-    grouped by its first letter.
+    (e.g. ``5.mp3`` or ``5.opus``), and each spoken word is recorded in
+    ``index.txt`` grouped by its first letter.
 
     Parameters
     ----------
     output_dir : str
         Target directory for the index file.
     audio_dir : Optional[str]
-        Directory for the ``.mp3`` files.  Defaults to ``output_dir``
+        Directory for the audio files.  Defaults to ``output_dir``
         when omitted.  Useful for keeping assets in a subfolder while
         the index stays at the destination root.
     index_filename : str
         Name of the structured index text file.
-    mp3_bitrate : str
-        Target MP3 bitrate (default ``"192k"``).
+    audio_format : str
+        Output container/codec (``"mp3"``, ``"opus"``, ``"ogg"``,
+        ``"wav"``, ...).  ``opus`` needs an ``opusenc`` binary on PATH
+        (e.g. from ffmpeg).  Default ``"mp3"``.
+    bitrate : str
+        Target bitrate for compressed formats (default ``"192k"``).
+        Ignored for lossless ``wav``.
     sample_rate : int
-        Sample rate for WAV intermediate conversion.
+        Sample rate for the intermediate conversion.
     start_number : int
         Number where auto-increment begins when numbering new words.
     prefix_length : int
@@ -82,7 +115,8 @@ class AudioArchiver:
         output_dir: str = "./recordings",
         audio_dir: Optional[str] = None,
         index_filename: str = "audio_index.txt",
-        mp3_bitrate: str = "192k",
+        audio_format: str = "mp3",
+        bitrate: str = "192k",
         sample_rate: int = 44_100,
         start_number: int = 1,
         prefix_length: int = 2,
@@ -90,7 +124,10 @@ class AudioArchiver:
         self.output_dir: Path = Path(output_dir)
         self.audio_dir: Path = Path(audio_dir) if audio_dir else self.output_dir
         self.index_path: Path = self.output_dir / index_filename
-        self.mp3_bitrate: str = mp3_bitrate
+        self.audio_format: str = _normalise_format(audio_format)
+        self.ext: str = self.audio_format
+        self.bitrate: str = bitrate
+        self.mp3_bitrate: str = bitrate  # backward-compatible alias
         self.sample_rate: int = sample_rate
         self.start_number: int = start_number
         self.prefix_length: int = prefix_length
@@ -108,21 +145,21 @@ class AudioArchiver:
     def clean(self) -> int:
         """Delete all indexed audio files and the index file.
 
-        Removes the ``.mp3`` files recorded so far (based on the index)
-        and deletes the index itself, leaving the directories in place.
-        Re-recorded words then start numbering fresh from
-        ``start_number``.
+        Removes the audio files recorded so far (based on the index,
+        matching this archiver's configured format) and deletes the index
+        itself, leaving the directories in place.  Re-recorded words then
+        start numbering fresh from ``start_number``.
 
         Returns
         -------
         int
-            Number of ``.mp3`` files removed.
+            Number of audio files removed.
         """
         removed: int = 0
         index: AudioIndex = self._load_index()
         for section in index.words.values():
             for number in section.values():
-                audio_file: Path = self.audio_dir / f"{number}.mp3"
+                audio_file: Path = self.audio_dir / f"{number}.{self.ext}"
                 try:
                     if audio_file.exists():
                         audio_file.unlink()
@@ -208,12 +245,12 @@ class AudioArchiver:
         logger.info("Registered word '%s' → %d", word.strip().lower(), number)
 
     # ------------------------------------------------------------------
-    def save_as_mp3(
+    def save_as(
         self,
         audio: np.ndarray,
         filename: str,
     ) -> str:
-        """Encode *audio* to MP3 and write to disk.
+        """Encode *audio* to the configured format and write to disk.
 
         Parameters
         ----------
@@ -225,14 +262,14 @@ class AudioArchiver:
         Returns
         -------
         str
-            Absolute path to the written ``.mp3`` file.
+            Absolute path to the written audio file.
 
         Raises
         ------
         RuntimeError
-            If encoding fails (e.g. missing ffmpeg).
+            If encoding fails (e.g. missing ffmpeg / codec binary).
         """
-        mp3_path: Path = self.audio_dir / f"{filename}.mp3"
+        target_path: Path = self.audio_dir / f"{filename}.{self.ext}"
         wav_path: Path = self.audio_dir / f"{filename}_tmp.wav"
 
         # Scale float32 [-1,1] to int16 PCM
@@ -249,20 +286,60 @@ class AudioArchiver:
             )
             segment.export(str(wav_path), format="wav")
 
-            # Convert WAV → MP3
+            # Convert WAV to the target format
             audio_seg: AudioSegment = AudioSegment.from_wav(str(wav_path))
-            audio_seg.export(
-                str(mp3_path), format="mp3", bitrate=self.mp3_bitrate
-            )
+            self._export(audio_seg, target_path)
 
             # Cleanup temporary WAV
             wav_path.unlink(missing_ok=True)
 
         except Exception as exc:
-            logger.error("MP3 encoding failed for '%s': %s", filename, exc)
+            logger.error(
+                "Audio encoding failed for '%s' (%s): %s",
+                filename, self.ext, exc,
+            )
             wav_path.unlink(missing_ok=True)
-            raise RuntimeError(f"MP3 encoding failed: {exc}") from exc
+            raise RuntimeError(f"Audio encoding failed: {exc}") from exc
 
-        final: str = str(mp3_path.resolve())
-        logger.info("Saved MP3 → %s", final)
+        final: str = str(target_path.resolve())
+        logger.info("Saved %s → %s", self.ext, final)
         return final
+
+    # ------------------------------------------------------------------
+    def _export(self, segment: AudioSegment, target_path: Path) -> None:
+        """Export *segment* to *target_path* using this archiver's format.
+
+        Parameters
+        ----------
+        segment : AudioSegment
+            In-memory audio to encode.
+        target_path : Path
+            Destination path (its extension implies the format).
+
+        Raises
+        ------
+        Exception
+            Re-raised from ``pydub`` if the codec is unavailable.
+        """
+        if self.audio_format == "wav":
+            segment.export(str(target_path), format="wav")
+            return
+
+        segment.export(
+            str(target_path),
+            format=self.audio_format,
+            bitrate=self.bitrate,
+        )
+
+    # ------------------------------------------------------------------
+    def save_as_mp3(
+        self,
+        audio: np.ndarray,
+        filename: str,
+    ) -> str:
+        """Backward-compatible alias for :meth:`save_as`.
+
+        Encodes to the currently configured format.  Retained so existing
+        callers that reference ``save_as_mp3`` keep working.
+        """
+        return self.save_as(audio, filename)

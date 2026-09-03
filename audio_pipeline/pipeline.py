@@ -30,7 +30,9 @@ class AudioPipeline:
     aggressive_prop : float
         ``prop_decrease`` used for the aggressive second pass.
     audio_dir : Optional[str]
-        Directory for ``.mp3`` files; defaults to the output dir.
+        Directory for audio files; defaults to the output dir.
+    audio_format : str
+        Output container/codec (``"mp3"``, ``"opus"``, ``"ogg"``, ...).
     input_device : Optional[Union[int, str]]
         Sound device for capture; ``None`` uses the default.
     start_number : int
@@ -45,6 +47,7 @@ class AudioPipeline:
         filter_passes: int = 2,
         aggressive_prop: float = 0.95,
         audio_dir: Optional[str] = None,
+        audio_format: str = "mp3",
         input_device: Optional[Union[int, str]] = None,
         start_number: int = 1,
         prefix_length: int = 2,
@@ -64,6 +67,7 @@ class AudioPipeline:
         self.archiver: AudioArchiver = AudioArchiver(
             output_dir=config.output_dir,
             audio_dir=audio_dir,
+            audio_format=audio_format,
             sample_rate=config.sample_rate,
             start_number=start_number,
             prefix_length=prefix_length,

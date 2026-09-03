@@ -48,7 +48,8 @@ class PipelineApp:
             output_dir=str(settings.resolved_destination),
             audio_dir=str(settings.resolved_audio_dir),
             index_filename=settings.index_filename,
-            mp3_bitrate=settings.mp3_bitrate,
+            audio_format=settings.audio_format,
+            bitrate=settings.mp3_bitrate,
             sample_rate=settings.sample_rate,
             start_number=settings.index_start_number,
             prefix_length=settings.index_prefix_length,
@@ -99,6 +100,30 @@ class PipelineApp:
         )
         self.start_hint.grid(row=1, column=2, sticky="w", pady=(12, 0))
 
+        # ---- Audio format ---------------------------------------------
+        ttk.Label(
+            main, text="Audio format:"
+        ).grid(row=2, column=0, sticky="w", pady=(12, 0))
+        self.format_var = tk.StringVar(
+            value=self.archiver.audio_format
+        )
+        self.format_box = ttk.Combobox(
+            main,
+            textvariable=self.format_var,
+            values=["mp3", "opus", "ogg", "wav"],
+            state="readonly",
+            width=8,
+        )
+        self.format_box.grid(
+            row=2, column=1, sticky="w", padx=6, pady=(12, 0)
+        )
+        self.format_hint = ttk.Label(
+            main,
+            text="opus/ogg need an opusenc/oggenc binary (ffmpeg).",
+            foreground="#666",
+        )
+        self.format_hint.grid(row=2, column=2, sticky="w", pady=(12, 0))
+
         # ---- Duration mode --------------------------------------------
         self.fixed_mode = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -106,7 +131,7 @@ class PipelineApp:
             text="Fixed duration (seconds)",
             variable=self.fixed_mode,
             command=self._on_mode_toggle,
-        ).grid(row=2, column=0, sticky="w", pady=(12, 0))
+        ).grid(row=3, column=0, sticky="w", pady=(12, 0))
 
         self.duration_var = tk.StringVar(
             value=str(self.settings.duration_seconds)
@@ -114,14 +139,14 @@ class PipelineApp:
         self.duration_entry = ttk.Entry(
             main, textvariable=self.duration_var, width=8
         )
-        self.duration_entry.grid(row=2, column=1, sticky="w", padx=6, pady=(12, 0))
+        self.duration_entry.grid(row=3, column=1, sticky="w", padx=6, pady=(12, 0))
         self.duration_entry.state(["disabled"])
         self.mode_hint = ttk.Label(
             main,
             text="Tap Record to start, tap again to stop (freeform).",
             foreground="#666",
         )
-        self.mode_hint.grid(row=2, column=2, sticky="w", pady=(12, 0))
+        self.mode_hint.grid(row=3, column=2, sticky="w", pady=(12, 0))
 
         # ---- Big Record button ----------------------------------------
         self.record_btn = ttk.Button(
@@ -130,21 +155,21 @@ class PipelineApp:
             command=self._on_record_click,
             width=20,
         )
-        self.record_btn.grid(row=3, column=0, columnspan=3, pady=16)
+        self.record_btn.grid(row=4, column=0, columnspan=3, pady=16)
 
         self.timer_label = ttk.Label(
             main, text="00:00.0", font=("Consolas", 22)
         )
-        self.timer_label.grid(row=4, column=0, columnspan=3)
+        self.timer_label.grid(row=5, column=0, columnspan=3)
 
         self.status_label = ttk.Label(
             main, text="Ready.", foreground="#555"
         )
-        self.status_label.grid(row=5, column=0, columnspan=3, pady=(6, 0))
+        self.status_label.grid(row=6, column=0, columnspan=3, pady=(6, 0))
 
         # ---- Review controls -------------------------------------------
         review = ttk.Frame(main)
-        review.grid(row=6, column=0, columnspan=3, pady=(18, 0))
+        review.grid(row=7, column=0, columnspan=3, pady=(18, 0))
 
         self.play_btn = ttk.Button(
             review, text="Play", command=self._on_play_click
@@ -171,18 +196,18 @@ class PipelineApp:
             widget.state(["disabled"])
 
         # Where assets land + clean button
-        ttk.Separator(main).grid(row=7, column=0, columnspan=3,
+        ttk.Separator(main).grid(row=8, column=0, columnspan=3,
                                  sticky="we", pady=12)
         ttk.Label(
             main,
             text=f"→ {self.settings.resolved_audio_dir}",
             foreground="#888",
-        ).grid(row=8, column=0, columnspan=2, sticky="w")
+        ).grid(row=9, column=0, columnspan=2, sticky="w")
 
         self.clean_btn = ttk.Button(
             main, text="Clean recordings", command=self._on_clean_click
         )
-        self.clean_btn.grid(row=8, column=2, sticky="e")
+        self.clean_btn.grid(row=9, column=2, sticky="e")
 
     # ------------------------------------------------------------------
     def _on_mode_toggle(self) -> None:
@@ -355,6 +380,8 @@ class PipelineApp:
             return
         # Apply the start-number the user set in the field.
         self._apply_start_number()
+        # Apply the format selected in the dropdown.
+        self._apply_format()
         try:
             number: int = self.archiver.number_for_word(word)
             self.archiver.save_as_mp3(self.current_audio, str(number))
@@ -363,7 +390,7 @@ class PipelineApp:
             logger.error("Save failed: %s", exc)
             messagebox.showerror("Save failed", str(exc))
             return
-        self._set_status(f"Saved '{word}' → {number}.mp3", "#0a0")
+        self._set_status(f"Saved '{word}' → {number}.{self.archiver.ext}", "#0a0")
         self.current_audio = None
         self._disable_review()
         self.timer_label.config(text="00:00.0")
@@ -381,6 +408,18 @@ class PipelineApp:
             self.start_number_var.set(str(self.archiver.start_number))
 
     # ------------------------------------------------------------------
+    def _apply_format(self) -> None:
+        """Push the dropdown's format selection onto the archiver.
+
+        Updates ``audio_format`` and the derived file extension so saved
+        files (and ``clean``) use the selected container/codec.
+        """
+        selected: str = self.format_var.get().strip().lower()
+        if selected:
+            self.archiver.audio_format = selected
+            self.archiver.ext = selected
+
+    # ------------------------------------------------------------------
     def _on_clean_click(self) -> None:
         """Delete recorded audio files and reset the index (with confirm)."""
         if not messagebox.askyesno(
@@ -390,6 +429,7 @@ class PipelineApp:
         ):
             return
         self._apply_start_number()
+        self._apply_format()
         removed: int = self.archiver.clean()
         self.status_label.config(
             text=f"Cleaned {removed} file(s). Index reset.", foreground="#555"

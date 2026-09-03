@@ -72,6 +72,15 @@ def main() -> int:
         action="store_true",
         help="Print available audio devices and exit.",
     )
+    parser.add_argument(
+        "--format",
+        default=None,
+        metavar="FMT",
+        help=(
+            "Output audio format: mp3 (default), opus, ogg, wav. "
+            "Overrides AUDIO_FORMAT from .env."
+        ),
+    )
     args = parser.parse_args()
 
     _ensure_utf8()
@@ -105,12 +114,14 @@ def main() -> int:
 
     print(f"  Word     : {config.word}")
     print(f"  Duration : {config.duration_seconds}s")
+    print(f"  Format   : {args.format or settings.audio_format}")
     print(f"  Audio    : {str(settings.resolved_audio_dir)}/")
     print(f"  Index    : {str(settings.index_path)}\n")
 
     pipeline: AudioPipeline = AudioPipeline(
         config=config,
         audio_dir=str(settings.resolved_audio_dir),
+        audio_format=args.format or settings.audio_format,
         input_device=settings.input_device,
         start_number=settings.index_start_number,
         prefix_length=settings.index_prefix_length,

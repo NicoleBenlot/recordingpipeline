@@ -56,8 +56,11 @@ class Settings:
         Aggressive strength used on re-filter passes.
     max_filter_passes : int
         Maximum passes before auto-commit.
+    audio_format : str
+        Output container/codec: ``"mp3"``, ``"opus"``, ``"ogg"``,
+        ``"wav"``.  ``opus`` needs an ``opusenc`` binary on PATH.
     mp3_bitrate : str
-        Target MP3 bitrate (e.g. ``"192k"``).
+        Target bitrate for compressed formats (e.g. ``"192k"``).
     log_level : str
         Logging level name.
     index_start_number : int
@@ -79,6 +82,7 @@ class Settings:
     filter_prop_decrease: float = 0.75
     filter_aggressive_prop: float = 0.95
     max_filter_passes: int = 2
+    audio_format: str = "mp3"
     mp3_bitrate: str = "192k"
     log_level: str = "INFO"
     index_start_number: int = 1
@@ -182,6 +186,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         max_filter_passes=_as_int(
             getenv("MAX_FILTER_PASSES", "2"), 2
         ),
+        audio_format=getenv("AUDIO_FORMAT", "mp3"),
         mp3_bitrate=getenv("MP3_BITRATE", "192k"),
         log_level=getenv("LOG_LEVEL", "INFO"),
         index_start_number=_as_int(
