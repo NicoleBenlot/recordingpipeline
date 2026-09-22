@@ -7,6 +7,8 @@ noisereduce>=3.0.0
 
 # Audio codec / MP3 encoding (requires ffmpeg on PATH)
 pydub>=0.25.1
+# Drop-in replacement for the `audioop` stdlib module removed in Python 3.13 (pydub dependency)
+audioop-lts>=0.2
 
 # Environment / configuration loading (.env)
 python-dotenv>=1.0.0
