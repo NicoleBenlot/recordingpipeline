@@ -69,6 +69,14 @@ class Settings:
     index_prefix_length : int
         Number of leading letters used to group words into index sections
         (default 2, e.g. ``siya`` → ``[si]``).
+    reduce_noise : bool
+        Whether noise reduction runs in the background on each capture.
+        ``False`` records the raw signal; the GUI's manual denoise
+        button and the CLI's ``[f]`` re-process option stay available.
+    multi_speaker : bool
+        Dupe policy for already-indexed words.  ``True`` keeps every take
+        (``amo = 1, 2`` with ``1.mp3`` and ``2.mp3``).  ``False``
+        overwrites the selected take (latest by default).
     """
 
     output_dir: str = "./recordings"
@@ -87,6 +95,8 @@ class Settings:
     log_level: str = "INFO"
     index_start_number: int = 1
     index_prefix_length: int = 2
+    reduce_noise: bool = True
+    multi_speaker: bool = False
     _extra: dict = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------
@@ -195,4 +205,6 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         index_prefix_length=_as_int(
             getenv("INDEX_PREFIX_LENGTH", "2"), 2
         ),
+        reduce_noise=_as_bool(getenv("REDUCE_NOISE", "1")),
+        multi_speaker=_as_bool(getenv("MULTI_SPEAKER", "0")),
     )

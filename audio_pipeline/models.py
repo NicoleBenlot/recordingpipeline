@@ -51,11 +51,24 @@ class PipelineResult:
     success : bool
         Whether the run completed and committed an asset.
     filepath : Optional[str]
-        Absolute path to the written MP3, if any.
+        Absolute path to the written audio file, if any.
+    word : str
+        The word that was recorded.
+    number : Optional[int]
+        Number of the audio file written by this run.
+    numbers : List[int]
+        Every number indexed for the word once this run was registered
+        (e.g. ``[1, 2]`` for ``amo = 1, 2``).
+    is_dupe : bool
+        True when the word already had at least one indexed take before
+        this run.
+    new_take : bool
+        True when this run added a take instead of replacing one.
     duration_recorded : float
         Seconds of audio actually captured.
     filter_passes : int
-        Number of noise-reduction passes applied.
+        Number of noise-reduction passes applied (``0`` when background
+        noise reduction is disabled).
     notes : str
         Notes attached to this run.
     errors : List[str]
@@ -66,6 +79,9 @@ class PipelineResult:
     filepath: Optional[str] = None
     word: str = ""
     number: Optional[int] = None
+    numbers: List[int] = field(default_factory=list)
+    is_dupe: bool = False
+    new_take: bool = False
     duration_recorded: float = 0.0
     filter_passes: int = 0
     notes: str = ""

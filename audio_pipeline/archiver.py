@@ -1,12 +1,13 @@
-"""Archival: MP3 encoding and word→audio text indexing."""
+"""Archival: audio encoding and word→audio text indexing."""
 
 from __future__ import annotations
 
 import logging
 import os
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 from pydub import AudioSegment
@@ -78,12 +79,63 @@ def _normalise_format(audio_format: str) -> str:
     return _FORMAT_ALIASES.get(fmt, fmt)
 
 
+@dataclass(frozen=True)
+class SaveTarget:
+    """Where one recording of a word should be written.
+
+    Returned by :meth:`AudioArchiver.resolve_target`.  Callers use
+    ``number`` as the audio filename stem, save the file, then hand the
+    same number to :meth:`AudioArchiver.register_word`.
+
+    Attributes
+    ----------
+    word : str
+        Normalised (lowercased, stripped) word.
+    number : int
+        The number to write now.
+    existing : List[int]
+        Numbers already indexed for this word *before* this save, in
+        ascending order.  Empty for a word never seen before.
+    is_new : bool
+        True when the word was not indexed at all.
+    is_new_take : bool
+        True when an already-indexed word was given a brand-new number
+        (multi-speaker mode).  False means ``number`` may already have an
+        audio file that this save will replace.
+    """
+
+    word: str
+    number: int
+    existing: List[int] = field(default_factory=list)
+    is_new: bool = False
+    is_new_take: bool = False
+
+    # ------------------------------------------------------------------
+    @property
+    def is_dupe(self) -> bool:
+        """True when the word already had at least one indexed take."""
+        return bool(self.existing)
+
+    # ------------------------------------------------------------------
+    @property
+    def overwrites(self) -> bool:
+        """True when this save replaces an existing audio file."""
+        return self.is_dupe and not self.is_new_take
+
+    # ------------------------------------------------------------------
+    @property
+    def numbers_after(self) -> List[int]:
+        """All numbers for the word once this save is registered."""
+        return sorted(set(self.existing) | {self.number})
+
+
 class AudioArchiver:
     """Converts NumPy buffers to compressed audio files and manages storage.
 
     Audio files are named by an auto-incrementing numeric stem
     (e.g. ``5.mp3`` or ``5.opus``), and each spoken word is recorded in
-    ``index.txt`` grouped by its first letter.
+    the index grouped by its first letters.  A word may hold several
+    takes (``amo = 1, 2``), each with its own globally unique number.
 
     Parameters
     ----------
@@ -108,6 +160,12 @@ class AudioArchiver:
         Number where auto-increment begins when numbering new words.
     prefix_length : int
         Number of leading letters used to group words into index sections.
+    multi_speaker : bool
+        Dupe policy.  ``True`` keeps every recording: an already-indexed
+        word gets a fresh number and a new audio file.  ``False``
+        overwrites, reusing the number of the take chosen by the caller
+        (the latest one by default).  Default ``False``, which preserves
+        the historical overwrite behaviour.
     """
 
     def __init__(
@@ -120,6 +178,7 @@ class AudioArchiver:
         sample_rate: int = 44_100,
         start_number: int = 1,
         prefix_length: int = 2,
+        multi_speaker: bool = False,
     ) -> None:
         self.output_dir: Path = Path(output_dir)
         self.audio_dir: Path = Path(audio_dir) if audio_dir else self.output_dir
@@ -131,15 +190,37 @@ class AudioArchiver:
         self.sample_rate: int = sample_rate
         self.start_number: int = start_number
         self.prefix_length: int = prefix_length
+        self.multi_speaker: bool = multi_speaker
         ensure_ffmpeg_on_path()
         self._ensure_directory(self.output_dir)
         self._ensure_directory(self.audio_dir)
         logger.info(
-            "AudioArchiver initialised  index=%s  audio=%s  start=%d",
+            "AudioArchiver initialised  index=%s  audio=%s  start=%d  "
+            "multi_speaker=%s",
             self.output_dir,
             self.audio_dir,
             self.start_number,
+            self.multi_speaker,
         )
+
+    # ------------------------------------------------------------------
+    def numbers_for_word(self, word: str) -> List[int]:
+        """Return every number already indexed for *word*.
+
+        Read-only counterpart to :meth:`resolve_target`, for populating
+        a take picker without deciding anything.
+
+        Parameters
+        ----------
+        word : str
+            Spoken word (case-insensitive).
+
+        Returns
+        -------
+        List[int]
+            Ascending numbers, empty when the word is not indexed.
+        """
+        return self._load_index().numbers_for_word(word)
 
     # ------------------------------------------------------------------
     def clean(self) -> int:
@@ -158,14 +239,15 @@ class AudioArchiver:
         removed: int = 0
         index: AudioIndex = self._load_index()
         for section in index.words.values():
-            for number in section.values():
-                audio_file: Path = self.audio_dir / f"{number}.{self.ext}"
-                try:
-                    if audio_file.exists():
-                        audio_file.unlink()
-                        removed += 1
-                except OSError as exc:
-                    logger.error("Could not remove %s: %s", audio_file, exc)
+            for numbers in section.values():
+                for number in numbers:
+                    audio_file: Path = self.audio_dir / f"{number}.{self.ext}"
+                    try:
+                        if audio_file.exists():
+                            audio_file.unlink()
+                            removed += 1
+                    except OSError as exc:
+                        logger.error("Could not remove %s: %s", audio_file, exc)
 
         try:
             if self.index_path.exists():
@@ -208,8 +290,90 @@ class AudioArchiver:
         )
 
     # ------------------------------------------------------------------
+    def resolve_target(
+        self,
+        word: str,
+        overwrite: Optional[int] = None,
+    ) -> SaveTarget:
+        """Decide which number the next recording of *word* should use.
+
+        This does not persist anything — it only inspects the index on
+        disk.  The caller must save the audio to ``target.number`` and
+        then call :meth:`register_word`.
+
+        Parameters
+        ----------
+        word : str
+            Spoken word being recorded (case-insensitive).
+        overwrite : Optional[int]
+            Which existing take to replace.  Only meaningful when the
+            word is already indexed and ``multi_speaker`` is off.  ``None``
+            (the default) targets the latest take.  A value the index does
+            not hold for this word raises ``ValueError``.
+
+        Returns
+        -------
+        SaveTarget
+            The resolved number plus the context needed to report what
+            happened.
+
+        Raises
+        ------
+        ValueError
+            If *word* is empty, or *overwrite* is not one of the word's
+            indexed takes.
+        """
+        normalized: str = word.strip().lower()
+        if not normalized:
+            raise ValueError("Cannot index an empty word.")
+
+        index: AudioIndex = self._load_index()
+        existing: List[int] = index.numbers_for_word(normalized)
+
+        # Never indexed: a plain new word.
+        if not existing:
+            return SaveTarget(
+                word=normalized,
+                number=index.next_number,
+                existing=[],
+                is_new=True,
+                is_new_take=False,
+            )
+
+        # Multi-speaker: keep every take, allocate a fresh number.
+        if self.multi_speaker:
+            return SaveTarget(
+                word=normalized,
+                number=index.next_number,
+                existing=existing,
+                is_new=False,
+                is_new_take=True,
+            )
+
+        # Overwrite an existing take, latest unless the caller says otherwise.
+        if overwrite is None:
+            chosen: int = existing[-1]
+        elif overwrite in existing:
+            chosen = overwrite
+        else:
+            raise ValueError(
+                f"'{normalized}' has no take {overwrite} "
+                f"(indexed takes: {', '.join(str(n) for n in existing)})."
+            )
+        return SaveTarget(
+            word=normalized,
+            number=chosen,
+            existing=existing,
+            is_new=False,
+            is_new_take=False,
+        )
+
+    # ------------------------------------------------------------------
     def number_for_word(self, word: str) -> int:
-        """Return the stable audio number for *word* without persisting.
+        """Return the audio number for *word* without persisting.
+
+        Thin wrapper over :meth:`resolve_target` honouring the current
+        ``multi_speaker`` setting.
 
         Parameters
         ----------
@@ -219,15 +383,19 @@ class AudioArchiver:
         Returns
         -------
         int
-            The numeric stem used for the audio filename, reusing an
-            existing number if the word was already recorded.
+            The numeric stem used for the audio filename: a new take when
+            ``multi_speaker`` is on, otherwise the word's latest number.
         """
-        index: AudioIndex = self._load_index()
-        return index.add_word(word)
+        return self.resolve_target(word).number
 
     # ------------------------------------------------------------------
-    def register_word(self, word: str, number: int) -> None:
-        """Record *word* mapped to *number* and persist the index.
+    def register_word(self, word: str, number: int) -> List[int]:
+        """Attach *number* to *word* and persist the index.
+
+        Idempotent by design, which is what lets the same call serve both
+        dupe policies: after a multi-speaker save it appends the new
+        number, while after an overwrite save the number is already
+        present and the index is left as it was.
 
         Parameters
         ----------
@@ -235,14 +403,23 @@ class AudioArchiver:
             The spoken word being indexed.
         number : int
             The audio number already assigned to this word.
+
+        Returns
+        -------
+        List[int]
+            Every number now indexed for the word, ascending.
+
+        Raises
+        ------
+        ValueError
+            If *word* is empty.
         """
         index: AudioIndex = self._load_index()
-        word_lower: str = word.strip().lower()
-        index.words.setdefault(
-            word_lower[: self.prefix_length], {}
-        )[word_lower] = number
+        normalized: str = word.strip().lower()
+        numbers: List[int] = index.add_number(normalized, number)
         index.save(self.index_path)
-        logger.info("Registered word '%s' → %d", word.strip().lower(), number)
+        logger.info("Registered word '%s' → %s", normalized, numbers)
+        return numbers
 
     # ------------------------------------------------------------------
     def save_as(

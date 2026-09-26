@@ -13,9 +13,9 @@ logger: logging.Logger = logging.getLogger(__name__)
 import numpy as np
 
 from .models import PipelineResult, RecordingConfig
+from .archiver import AudioArchiver, SaveTarget
 from .recorder import AudioRecorder
 from .filter import AudioFilter
-from .archiver import AudioArchiver
 
 
 class AudioPipeline:
@@ -39,6 +39,13 @@ class AudioPipeline:
         Floor for auto-incrementing new word numbers.
     prefix_length : int
         Number of leading letters used to group index sections.
+    reduce_noise : bool
+        Run noise reduction in the background on every capture.  When
+        ``False`` the raw signal is archived and the review panel's
+        ``[f]`` option reports that reduction is disabled.
+    multi_speaker : bool
+        Dupe policy.  ``True`` keeps every take of a word; ``False``
+        overwrites an existing take after asking which one.
     """
 
     def __init__(
@@ -51,10 +58,13 @@ class AudioPipeline:
         input_device: Optional[Union[int, str]] = None,
         start_number: int = 1,
         prefix_length: int = 2,
+        reduce_noise: bool = True,
+        multi_speaker: bool = False,
     ) -> None:
         self.config: RecordingConfig = config
         self.max_passes: int = filter_passes
         self.aggressive_prop: float = aggressive_prop
+        self.reduce_noise: bool = reduce_noise
 
         self.recorder: AudioRecorder = AudioRecorder(
             sample_rate=config.sample_rate,
@@ -71,7 +81,49 @@ class AudioPipeline:
             sample_rate=config.sample_rate,
             start_number=start_number,
             prefix_length=prefix_length,
+            multi_speaker=multi_speaker,
         )
+
+    # ------------------------------------------------------------------
+    def _resolve_cli_target(self, word: str) -> SaveTarget:
+        """Resolve the save target, asking which take to overwrite.
+
+        Mirrors the GUI's dropdown: with ``multi_speaker`` off and the
+        word already indexed, the user picks from the indexed takes
+        instead of always clobbering the latest one.
+
+        Parameters
+        ----------
+        word : str
+            The word being recorded.
+
+        Returns
+        -------
+        SaveTarget
+            The resolved target.  Falls back to the latest take when the
+            answer is empty or not one of the word's takes.
+        """
+        target: SaveTarget = self.archiver.resolve_target(word)
+        if self.archiver.multi_speaker or not target.is_dupe:
+            return target
+
+        takes: str = ", ".join(str(n) for n in target.existing)
+        print(f"\n  ⚠ '{word}' is already indexed → take(s) {takes}.")
+        answer: str = input(
+            f"  ➤ Overwrite which take? [latest/{target.existing[-1]}]: "
+        ).strip()
+        if not answer:
+            return target
+        try:
+            chosen: int = int(answer)
+        except ValueError:
+            print("  ⚠ Not a number — using the latest take.")
+            return target
+        try:
+            return self.archiver.resolve_target(word, overwrite=chosen)
+        except ValueError as exc:
+            print(f"  ⚠ {exc} Using the latest take.")
+            return target
 
     # ------------------------------------------------------------------
     def _review_loop(self, audio: np.ndarray) -> Tuple[np.ndarray, int]:
@@ -83,7 +135,7 @@ class AudioPipeline:
             The accepted audio buffer and the number of filter passes
             applied.  A pass count of ``-1`` signals a discard.
         """
-        passes: int = 1
+        passes: int = 1 if self.reduce_noise else 0
         current: np.ndarray = audio
 
         while True:
@@ -92,7 +144,10 @@ class AudioPipeline:
             print("╚══════════════════════════════════════╝")
             print("  [p] Play audio")
             print("  [r] Re-record (restart)")
-            print("  [f] Re-process with more aggressive filter")
+            if self.reduce_noise:
+                print("  [f] Re-process with more aggressive filter")
+            else:
+                print("  [f] Re-process (disabled – noise reduction is off)")
             print("  [s] Save / commit current buffer")
             print("  [d] Discard and exit")
             print(f"\n  Current filter passes: {passes}")
@@ -107,12 +162,20 @@ class AudioPipeline:
             elif choice == "r":
                 print("  ↻ Restarting recording …")
                 current = self.recorder.record(self.config.duration_seconds)
-                passes = 1
                 self.filter.prop_decrease = 0.75
-                current = self.filter.reduce_noise(current)
-                passes = 1
+                if self.reduce_noise:
+                    current = self.filter.reduce_noise(current)
+                    passes = 1
+                else:
+                    passes = 0
 
             elif choice == "f":
+                if not self.reduce_noise:
+                    print(
+                        "  ⚠ Noise reduction is disabled – nothing to do.",
+                        file=sys.stderr,
+                    )
+                    continue
                 if passes >= self.max_passes:
                     print(
                         f"  ⚠ Maximum filter passes ({self.max_passes}) "
@@ -164,8 +227,12 @@ class AudioPipeline:
             return result
 
         # ---- Step 2: Initial noise reduction --------------------------------
-        filtered: np.ndarray = self.filter.reduce_noise(raw)
-        result.filter_passes = 1
+        if self.reduce_noise:
+            filtered: np.ndarray = self.filter.reduce_noise(raw)
+            result.filter_passes = 1
+        else:
+            filtered = raw
+            result.filter_passes = 0
 
         # ---- Step 3: Review loop -------------------------------------------
         accepted, passes = self._review_loop(filtered)
@@ -176,16 +243,30 @@ class AudioPipeline:
 
         result.filter_passes = passes
 
-        # ---- Step 4: Assign number + archive --------------------------------
+        # ---- Step 4: Resolve number + archive -------------------------------
         try:
-            number: int = self.archiver.number_for_word(self.config.word)
+            target: SaveTarget = self._resolve_cli_target(self.config.word)
         except Exception as exc:
             msg = f"Index lookup failed: {exc}"
             logger.error(msg)
             result.errors.append(msg)
             return result
 
+        number: int = target.number
         result.number = number
+        result.is_dupe = target.is_dupe
+        result.new_take = target.is_new_take
+        if target.overwrites:
+            print(
+                f"  ↻ Overwriting take {number} of '{target.word}' "
+                f"({len(target.existing)} take(s) indexed)."
+            )
+        elif target.is_new_take:
+            print(
+                f"  ➕ New take {number} for '{target.word}' "
+                f"({len(target.existing)} existing)."
+            )
+
         try:
             filepath: str = self.archiver.save_as_mp3(accepted, str(number))
         except Exception as exc:
@@ -196,7 +277,9 @@ class AudioPipeline:
 
         # ---- Step 5: Persist index ------------------------------------------
         try:
-            self.archiver.register_word(self.config.word, number)
+            result.numbers = self.archiver.register_word(
+                self.config.word, number
+            )
         except Exception as exc:
             msg = f"Index write failed: {exc}"
             logger.error(msg)
@@ -207,10 +290,12 @@ class AudioPipeline:
         result.filepath = filepath
         result.notes = self.config.notes
         logger.info(
-            "Pipeline finished: '%s' → %d.mp3 → %s",
+            "Pipeline finished: '%s' → %d.%s → %s (takes: %s)",
             self.config.word,
             number,
+            self.archiver.ext,
             filepath,
+            result.numbers,
         )
         return result
 

@@ -3,6 +3,14 @@
 Provides a tap-to-record / tap-again-to-stop interface with a live
 elapsed timer, optional fixed-duration recording, playback, noise
 reduction, and save/discard controls wired into the backend classes.
+
+Dupe words are handled by two controls: *Keep every take
+(multi-speaker)* allocates a fresh number per recording
+(``amo = 1, 2``), while with it off the *Overwrite take* dropdown —
+populated from the takes already indexed for the word in the entry
+field — selects which existing ``<number>.<ext>`` file to replace.
+*Background noise reduction* toggles the automatic denoise pass that
+runs after each capture; the manual Denoise button is always available.
 """
 
 from __future__ import annotations
@@ -10,14 +18,14 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 
 from .config import Settings
+from .archiver import AudioArchiver, SaveTarget
 from .recorder import AudioRecorder
 from .filter import AudioFilter
-from .archiver import AudioArchiver
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -53,8 +61,13 @@ class PipelineApp:
             sample_rate=settings.sample_rate,
             start_number=settings.index_start_number,
             prefix_length=settings.index_prefix_length,
+            multi_speaker=settings.multi_speaker,
         )
         self._start_number_base: int = settings.index_start_number
+
+        # Takes currently indexed for the word in the entry field.
+        self._overwrite_numbers: List[int] = []
+        self._overwrite_choices: List[str] = []
 
         # Current working buffer (raw or filtered) awaiting review.
         self.current_audio: Optional[np.ndarray] = None
@@ -76,9 +89,12 @@ class PipelineApp:
         # ---- Word / notes --------------------------------------------
         ttk.Label(main, text="Word to record:").grid(row=0, column=0, sticky="w")
         self.word_var = tk.StringVar()
-        ttk.Entry(main, textvariable=self.word_var, width=28).grid(
-            row=0, column=1, columnspan=2, sticky="we", padx=6
+        self.word_entry = ttk.Entry(
+            main, textvariable=self.word_var, width=28
         )
+        self.word_entry.grid(row=0, column=1, columnspan=2, sticky="we", padx=6)
+        # Leaving the field is when the take list can be looked up.
+        self.word_entry.bind("<FocusOut>", self._on_word_focus_out)
 
         # ---- Start numbering at --------------------------------------
         ttk.Label(
@@ -124,6 +140,46 @@ class PipelineApp:
         )
         self.format_hint.grid(row=2, column=2, sticky="w", pady=(12, 0))
 
+        # ---- Dupe policy ----------------------------------------------
+        self.multi_speaker_var = tk.BooleanVar(
+            value=self.archiver.multi_speaker
+        )
+        ttk.Checkbutton(
+            main,
+            text="Keep every take (multi-speaker)",
+            variable=self.multi_speaker_var,
+            command=self._apply_multi_speaker,
+        ).grid(row=3, column=0, sticky="w", pady=(12, 0))
+        self.multi_hint = ttk.Label(
+            main,
+            text="amo = 1, 2 → 1.opus + 2.opus",
+            foreground="#666",
+        )
+        self.multi_hint.grid(row=3, column=1, columnspan=2, sticky="w", pady=(12, 0))
+
+        # ---- Take picker (overwrite mode) ------------------------------
+        ttk.Label(
+            main, text="Overwrite take:"
+        ).grid(row=4, column=0, sticky="w", pady=(12, 0))
+        self.overwrite_var = tk.StringVar()
+        self.overwrite_box = ttk.Combobox(
+            main,
+            textvariable=self.overwrite_var,
+            values=[],
+            state="readonly",
+            width=8,
+        )
+        self.overwrite_box.grid(
+            row=4, column=1, sticky="w", padx=6, pady=(12, 0)
+        )
+        self.overwrite_box.state(["disabled"])
+        self.overwrite_hint = ttk.Label(
+            main,
+            text="No takes indexed for this word yet.",
+            foreground="#666",
+        )
+        self.overwrite_hint.grid(row=4, column=2, sticky="w", pady=(12, 0))
+
         # ---- Duration mode --------------------------------------------
         self.fixed_mode = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -131,7 +187,7 @@ class PipelineApp:
             text="Fixed duration (seconds)",
             variable=self.fixed_mode,
             command=self._on_mode_toggle,
-        ).grid(row=3, column=0, sticky="w", pady=(12, 0))
+        ).grid(row=5, column=0, sticky="w", pady=(12, 0))
 
         self.duration_var = tk.StringVar(
             value=str(self.settings.duration_seconds)
@@ -139,14 +195,28 @@ class PipelineApp:
         self.duration_entry = ttk.Entry(
             main, textvariable=self.duration_var, width=8
         )
-        self.duration_entry.grid(row=3, column=1, sticky="w", padx=6, pady=(12, 0))
+        self.duration_entry.grid(row=5, column=1, sticky="w", padx=6, pady=(12, 0))
         self.duration_entry.state(["disabled"])
         self.mode_hint = ttk.Label(
             main,
             text="Tap Record to start, tap again to stop (freeform).",
             foreground="#666",
         )
-        self.mode_hint.grid(row=3, column=2, sticky="w", pady=(12, 0))
+        self.mode_hint.grid(row=5, column=2, sticky="w", pady=(12, 0))
+
+        # ---- Background noise reduction -------------------------------
+        self.reduce_noise_var = tk.BooleanVar(value=self.settings.reduce_noise)
+        ttk.Checkbutton(
+            main,
+            text="Background noise reduction",
+            variable=self.reduce_noise_var,
+        ).grid(row=6, column=0, sticky="w", pady=(12, 0))
+        self.filter_hint = ttk.Label(
+            main,
+            text="Applies automatically after each capture.",
+            foreground="#666",
+        )
+        self.filter_hint.grid(row=6, column=1, columnspan=2, sticky="w", pady=(12, 0))
 
         # ---- Big Record button ----------------------------------------
         self.record_btn = ttk.Button(
@@ -155,21 +225,21 @@ class PipelineApp:
             command=self._on_record_click,
             width=20,
         )
-        self.record_btn.grid(row=4, column=0, columnspan=3, pady=16)
+        self.record_btn.grid(row=7, column=0, columnspan=3, pady=16)
 
         self.timer_label = ttk.Label(
             main, text="00:00.0", font=("Consolas", 22)
         )
-        self.timer_label.grid(row=5, column=0, columnspan=3)
+        self.timer_label.grid(row=8, column=0, columnspan=3)
 
         self.status_label = ttk.Label(
             main, text="Ready.", foreground="#555"
         )
-        self.status_label.grid(row=6, column=0, columnspan=3, pady=(6, 0))
+        self.status_label.grid(row=9, column=0, columnspan=3, pady=(6, 0))
 
         # ---- Review controls -------------------------------------------
         review = ttk.Frame(main)
-        review.grid(row=7, column=0, columnspan=3, pady=(18, 0))
+        review.grid(row=10, column=0, columnspan=3, pady=(18, 0))
 
         self.play_btn = ttk.Button(
             review, text="Play", command=self._on_play_click
@@ -196,18 +266,94 @@ class PipelineApp:
             widget.state(["disabled"])
 
         # Where assets land + clean button
-        ttk.Separator(main).grid(row=8, column=0, columnspan=3,
-                                 sticky="we", pady=12)
+        ttk.Separator(main).grid(row=11, column=0, columnspan=3,
+                                  sticky="we", pady=12)
         ttk.Label(
             main,
             text=f"→ {self.settings.resolved_audio_dir}",
             foreground="#888",
-        ).grid(row=9, column=0, columnspan=2, sticky="w")
+        ).grid(row=12, column=0, columnspan=2, sticky="w")
 
         self.clean_btn = ttk.Button(
             main, text="Clean recordings", command=self._on_clean_click
         )
-        self.clean_btn.grid(row=9, column=2, sticky="e")
+        self.clean_btn.grid(row=12, column=2, sticky="e")
+
+        # Populate the take picker for any word already in the field.
+        self._refresh_overwrite_choices()
+
+    # ------------------------------------------------------------------
+    def _on_word_focus_out(self, _event: Optional[tk.Event] = None) -> None:
+        """Refresh the take picker when the word field loses focus."""
+        self._refresh_overwrite_choices()
+
+    # ------------------------------------------------------------------
+    def _refresh_overwrite_choices(self) -> None:
+        """Repopulate the take picker from the word in the entry field.
+
+        Reads every take already indexed for that word so the dropdown
+        can offer each ``<number>.<ext>`` file as an overwrite target.
+        The latest take is preselected.
+        """
+        word: str = self.word_var.get().strip()
+        if not word:
+            self._set_overwrite_choices([])
+            return
+        try:
+            existing: List[int] = self.archiver.numbers_for_word(word)
+        except Exception as exc:
+            logger.error("Could not read the index for '%s': %s", word, exc)
+            self._set_overwrite_choices([])
+            return
+        self._set_overwrite_choices(existing)
+
+    # ------------------------------------------------------------------
+    def _set_overwrite_choices(self, numbers: List[int]) -> None:
+        """Show *numbers* as the available overwrite targets.
+
+        Parameters
+        ----------
+        numbers : List[int]
+            Take numbers indexed for the current word.  Empty disables
+            the dropdown.
+        """
+        labels: List[str] = [str(n) for n in numbers]
+        self._overwrite_numbers = list(numbers)
+        self._overwrite_choices = labels
+        self.overwrite_box.configure(values=labels)
+
+        if not labels:
+            self.overwrite_var.set("")
+            self.overwrite_box.state(["disabled"])
+            self.overwrite_hint.config(
+                text="No takes indexed for this word yet."
+            )
+            return
+
+        # Keep a valid selection, defaulting to the latest take.
+        if self.overwrite_var.get() not in labels:
+            self.overwrite_var.set(labels[-1])
+
+        if self.multi_speaker_var.get():
+            self.overwrite_box.state(["disabled"])
+            self.overwrite_hint.config(
+                text="Multi-speaker on: nothing is overwritten."
+            )
+        else:
+            self.overwrite_box.state(["!disabled"])
+            self.overwrite_hint.config(
+                text=f"{len(labels)} take(s) indexed; latest is {labels[-1]}."
+            )
+
+    # ------------------------------------------------------------------
+    def _apply_multi_speaker(self) -> None:
+        """Push the multi-speaker checkbox onto the archiver.
+
+        The take picker only applies when takes are replaced, so it is
+        disabled while multi-speaker mode is on.
+        """
+        self.archiver.multi_speaker = self.multi_speaker_var.get()
+        self._set_overwrite_choices(self._overwrite_numbers)
 
     # ------------------------------------------------------------------
     def _on_mode_toggle(self) -> None:
@@ -333,11 +479,19 @@ class PipelineApp:
         mins, secs = divmod(int(duration), 60)
         tenths: int = int((duration - int(duration)) * 10)
         self.timer_label.config(text=f"{mins:02d}:{secs:02d}.{tenths}")
+        denoised: bool = False
+        if self.reduce_noise_var.get():
+            self._set_status("Reducing background noise…", "#00a")
+            self.root.update_idletasks()
+            audio = self.filter.reduce_noise(audio)
+            denoised = True
         self.current_audio = audio
-        self.filtered = False
+        self.filtered = denoised
         self.record_btn.config(text="●  Record", state=["normal"])
+        note: str = " (denoised)" if denoised else ""
         self._set_status(
-            f"Captured {duration:.1f}s. Review, then Save or Discard.", "#0a0"
+            f"Captured {duration:.1f}s{note}. Review, then Save or Discard.",
+            "#0a0",
         )
         self._enable_review()
 
@@ -370,6 +524,70 @@ class PipelineApp:
         self._set_status("Noise reduction applied.", "#0a0")
 
     # ------------------------------------------------------------------
+    def _selected_overwrite(self, word: str) -> Optional[int]:
+        """Return the take the user picked, or ``None`` for the default.
+
+        ``None`` lets :meth:`AudioArchiver.resolve_target` choose: the
+        latest take for an indexed word, or a fresh number for a new one.
+        A selection that no longer matches the index is discarded, so a
+        stale dropdown value can never clobber the wrong file.
+
+        Parameters
+        ----------
+        word : str
+            The word being recorded.
+
+        Returns
+        -------
+        Optional[int]
+            The chosen take number, or ``None``.
+        """
+        if self.archiver.multi_speaker:
+            return None
+        raw: str = self.overwrite_var.get().strip()
+        if not raw:
+            return None
+        try:
+            chosen: int = int(raw)
+        except ValueError:
+            return None
+        if chosen in self._overwrite_numbers:
+            return chosen
+        logger.warning(
+            "Dropping stale take selection %s for '%s'", raw, word
+        )
+        return None
+
+    # ------------------------------------------------------------------
+    def _confirm_overwrite(self, target: SaveTarget) -> bool:
+        """Ask before replacing the audio file behind *target*.
+
+        The take picker is a deliberate choice, but the audio it destroys
+        cannot be recovered, so the destructive step is confirmed.
+
+        Parameters
+        ----------
+        target : SaveTarget
+            A resolved target whose ``overwrites`` flag is set.
+
+        Returns
+        -------
+        bool
+            True when the user accepts.
+        """
+        ext: str = self.archiver.ext
+        takes: str = ", ".join(
+            "{0}.{1}".format(n, ext) for n in target.existing
+        )
+        return messagebox.askyesno(
+            "Overwrite recording",
+            f"'{target.word}' already has {len(target.existing)} "
+            f"indexed take(s):\n  {takes}\n\n"
+            f"Overwrite {target.number}.{ext}?\n"
+            "The existing audio will be lost.",
+        )
+
+    # ------------------------------------------------------------------
     def _on_save_click(self) -> None:
         """Archive the current buffer and index it under the word."""
         if self.current_audio is None:
@@ -382,18 +600,43 @@ class PipelineApp:
         self._apply_start_number()
         # Apply the format selected in the dropdown.
         self._apply_format()
+        # Apply the dupe policy and refresh the take list.
+        self._apply_multi_speaker()
+        self._refresh_overwrite_choices()
         try:
-            number: int = self.archiver.number_for_word(word)
-            self.archiver.save_as_mp3(self.current_audio, str(number))
-            self.archiver.register_word(word, number)
+            target: SaveTarget = self.archiver.resolve_target(
+                word, self._selected_overwrite(word)
+            )
+        except Exception as exc:
+            logger.error("Index lookup failed: %s", exc)
+            messagebox.showerror("Save failed", str(exc))
+            return
+
+        if target.overwrites and not self._confirm_overwrite(target):
+            self._set_status("Save cancelled.", "#555")
+            return
+
+        try:
+            self.archiver.save_as_mp3(self.current_audio, str(target.number))
+            numbers: List[int] = self.archiver.register_word(
+                word, target.number
+            )
         except Exception as exc:
             logger.error("Save failed: %s", exc)
             messagebox.showerror("Save failed", str(exc))
             return
-        self._set_status(f"Saved '{word}' → {number}.{self.archiver.ext}", "#0a0")
+
+        ext: str = self.archiver.ext
+        self._set_status(
+            f"Saved '{target.word}' → {target.number}.{ext} "
+            f"({len(numbers)} take(s): {', '.join(str(n) for n in numbers)}).",
+            "#a50" if target.overwrites else "#0a0",
+        )
         self.current_audio = None
         self._disable_review()
         self.timer_label.config(text="00:00.0")
+        # The take list just changed; repopulate the picker.
+        self._refresh_overwrite_choices()
 
     # ------------------------------------------------------------------
     def _apply_start_number(self) -> None:
@@ -437,6 +680,7 @@ class PipelineApp:
         self.current_audio = None
         self._disable_review()
         self.timer_label.config(text="00:00.0")
+        self._refresh_overwrite_choices()
 
     # ------------------------------------------------------------------
     def _on_discard_click(self) -> None:

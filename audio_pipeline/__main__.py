@@ -81,6 +81,23 @@ def main() -> int:
             "Overrides AUDIO_FORMAT from .env."
         ),
     )
+    parser.add_argument(
+        "--no-filter",
+        action="store_true",
+        help=(
+            "Disable background noise reduction; archive the raw "
+            "signal. Overrides REDUCE_NOISE from .env."
+        ),
+    )
+    parser.add_argument(
+        "--multi-speaker",
+        action="store_true",
+        help=(
+            "Keep every recording of a word as a separate take "
+            "(amo = 1, 2) instead of overwriting an existing one. "
+            "Overrides MULTI_SPEAKER from .env."
+        ),
+    )
     args = parser.parse_args()
 
     _ensure_utf8()
@@ -90,6 +107,9 @@ def main() -> int:
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+
+    reduce_noise: bool = settings.reduce_noise and not args.no_filter
+    multi_speaker: bool = settings.multi_speaker or args.multi_speaker
 
     if args.list_devices:
         AudioRecorder.list_devices()
@@ -115,6 +135,15 @@ def main() -> int:
     print(f"  Word     : {config.word}")
     print(f"  Duration : {config.duration_seconds}s")
     print(f"  Format   : {args.format or settings.audio_format}")
+    print(f"  Noise    : {'on' if reduce_noise else 'off'}")
+    print(
+        "  Dupes    : "
+        + (
+            "keep every take (multi-speaker)"
+            if multi_speaker
+            else "overwrite an existing take"
+        )
+    )
     print(f"  Audio    : {str(settings.resolved_audio_dir)}/")
     print(f"  Index    : {str(settings.index_path)}\n")
 
@@ -125,6 +154,8 @@ def main() -> int:
         input_device=settings.input_device,
         start_number=settings.index_start_number,
         prefix_length=settings.index_prefix_length,
+        reduce_noise=reduce_noise,
+        multi_speaker=multi_speaker,
     )
     result = pipeline.run()
     _print_result(result)
