@@ -179,6 +179,13 @@ class PipelineApp:
             foreground="#666",
         )
         self.overwrite_hint.grid(row=4, column=2, sticky="w", pady=(12, 0))
+        self.refresh_takes_btn = ttk.Button(
+            main,
+            text="Refresh",
+            command=self._on_refresh_takes_click,
+            width=8,
+        )
+        self.refresh_takes_btn.grid(row=4, column=3, sticky="w", padx=6, pady=(12, 0))
 
         # ---- Duration mode --------------------------------------------
         self.fixed_mode = tk.BooleanVar(value=False)
@@ -345,6 +352,32 @@ class PipelineApp:
             self.overwrite_hint.config(
                 text=f"{len(labels)} take(s) indexed; latest is {labels[-1]}."
             )
+
+    # ------------------------------------------------------------------
+    def _on_refresh_takes_click(self) -> None:
+        """Re-read the take list for the current word on demand.
+
+        The list also refreshes when the word field loses focus, after
+        every save and after a clean; this button covers the case where
+        the index changed outside this window.
+        """
+        self._refresh_overwrite_choices()
+        word: str = self.word_var.get().strip()
+        if not word:
+            self._set_status("Enter a word to refresh its takes.", "#555")
+            return
+        count: int = len(self._overwrite_numbers)
+        if not count:
+            self._set_status(
+                f"'{word}' has no indexed takes – a new number will be used.",
+                "#555",
+            )
+            return
+        self._set_status(
+            f"'{word}' has {count} indexed take(s): "
+            f"{', '.join(str(n) for n in self._overwrite_numbers)}.",
+            "#555",
+        )
 
     # ------------------------------------------------------------------
     def _apply_multi_speaker(self) -> None:
