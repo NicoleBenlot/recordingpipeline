@@ -8,9 +8,30 @@ import time
 from typing import Any, List, Optional, Union
 
 import numpy as np
-import sounddevice as sd
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+# ``sounddevice`` initialises PortAudio on import, which is slow enough to
+# noticeably delay the GUI window appearing.  Import it on first use
+# instead of at module import time; every method that needs it calls
+# ``_sd()`` first and then uses the local ``sd`` name as before.
+_sounddevice: Optional[Any] = None
+
+
+def _sd() -> Any:
+    """Return the ``sounddevice`` module, importing it on first use.
+
+    Returns
+    -------
+    Any
+        The imported ``sounddevice`` module.
+    """
+    global _sounddevice
+    if _sounddevice is None:
+        import sounddevice
+
+        _sounddevice = sounddevice
+    return _sounddevice
 
 
 class AudioRecorder:
@@ -79,7 +100,7 @@ class AudioRecorder:
     def list_devices() -> None:
         """Print available audio devices to stdout."""
         print("\n--- Available Audio Devices ---")
-        print(sd.query_devices())
+        print(_sd().query_devices())
         print("-------------------------------\n")
 
     # ------------------------------------------------------------------
@@ -128,6 +149,7 @@ class AudioRecorder:
         if self._stream is not None:
             logger.warning("Stream already active – ignoring start.")
             return
+        sd = _sd()
         with self._lock:
             self._chunks = []
         try:
@@ -206,6 +228,7 @@ class AudioRecorder:
             If the stream fails during recording.
         """
         logger.info("Recording %.2f s …", duration)
+        sd = _sd()
         try:
             raw: np.ndarray = sd.rec(
                 int(duration * self.sample_rate),
@@ -241,6 +264,7 @@ class AudioRecorder:
             Float32 sample array.
         """
         logger.info("Playing back audio …")
+        sd = _sd()
         try:
             sd.play(audio, samplerate=self.sample_rate, device=self.device)
             sd.wait()

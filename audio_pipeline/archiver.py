@@ -22,12 +22,19 @@ def ensure_ffmpeg_on_path() -> bool:
 
     Checks the system ``PATH`` first; if missing, scans the WinGet
     ``Gyan.FFmpeg`` install location (common on this machine) and prepends
-    its ``bin`` directory to the current process ``PATH``.
+    its ``bin`` directory to the current process ``PATH``.  Any ffmpeg
+    build variant is matched (``full_build``, ``essentials_build``, …),
+    not just one.
 
     Returns
     -------
     bool
         True if ``ffmpeg`` is available after this call.
+
+    Warns
+    -----
+    If no executable is found, because every save will then fail deep
+    inside pydub with an opaque ``FileNotFoundError`` (WinError 2).
     """
     if shutil.which("ffmpeg"):
         return True
@@ -38,16 +45,22 @@ def ensure_ffmpeg_on_path() -> bool:
         / "WinGet"
         / "Packages"
     )
-    if not packages_root.exists():
-        return False
+    if packages_root.exists():
+        for pkg in packages_root.glob("Gyan.FFmpeg_*"):
+            for build in pkg.glob("ffmpeg-*"):
+                bin_dir = build / "bin"
+                if (bin_dir / "ffmpeg.exe").exists():
+                    os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ["PATH"]
+                    logger.info("Added ffmpeg bin to PATH: %s", bin_dir)
+                    return True
 
-    for pkg in packages_root.glob("Gyan.FFmpeg_*"):
-        for build in pkg.glob("ffmpeg-*-full_build"):
-            bin_dir = build / "bin"
-            if (bin_dir / "ffmpeg.exe").exists():
-                os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ["PATH"]
-                logger.info("Added ffmpeg bin to PATH: %s", bin_dir)
-                return True
+    logger.warning(
+        "ffmpeg was not found. Saving audio will fail with "
+        "[WinError 2] until it is installed – e.g. "
+        "`winget install Gyan.FFmpeg` – or added to PATH. Looked on PATH "
+        "and in %s.",
+        packages_root,
+    )
     return False
 
 

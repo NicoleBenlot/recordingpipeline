@@ -7,27 +7,130 @@ Reads settings from environment variables / a ``.env`` file via
 from __future__ import annotations
 
 import os
+import re
+import logging
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv, set_key
     _DOTENV_AVAILABLE = True
 except ImportError:  # pragma: no cover - dotenv is optional
     _DOTENV_AVAILABLE = False
 
 
+# ----------------------------------------------------------------------
 def _resolve_project_root() -> Path:
     """Return the project root (parent of this package)."""
     return Path(__file__).resolve().parent.parent
 
 
+# ----------------------------------------------------------------------
+def env_file_path() -> Path:
+    """Return the project ``.env`` path."""
+    return _resolve_project_root() / ".env"
+
+
+# ----------------------------------------------------------------------
+def ensure_env_file() -> Optional[Path]:
+    """Create ``.env`` from ``.env.example`` when it does not exist yet.
+
+    Keeps a fresh checkout runnable instead of silently falling back to
+    built-in defaults, which would archive to ``./recordings`` rather than
+    the documented layout.  An existing ``.env`` is never touched.
+
+    Returns
+    -------
+    Optional[Path]
+        The path that was created, or ``None`` if nothing was needed
+        (already present, or no ``.env.example`` to copy from).
+    """
+    path: Path = env_file_path()
+    if path.exists():
+        return None
+
+    template: Path = path.with_name(".env.example")
+    if not template.exists():
+        logger.debug("No .env and no .env.example – using built-in defaults.")
+        return None
+
+    try:
+        path.write_text(
+            template.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.error(
+            "Could not create %s from %s: %s", path, template.name, exc
+        )
+        return None
+    logger.info("Created %s from %s – review it and adjust.", path, template.name)
+    return path
+
+
+# ----------------------------------------------------------------------
 def load_env_file() -> None:
-    """Load ``.env`` from the project root, if present."""
+    """Create ``.env`` from the template if needed, then load it."""
+    ensure_env_file()
     if not _DOTENV_AVAILABLE:
         return
-    load_dotenv(_resolve_project_root() / ".env")
+    load_dotenv(env_file_path())
+
+
+# ----------------------------------------------------------------------
+def set_env_value(key: str, value: str) -> bool:
+    """Persist ``key=value`` in the project ``.env``.
+
+    Used by the GUI to remember a toggle between runs.  Comments and
+    unrelated keys in the file are preserved, and the value is applied to
+    the current process so a later ``load_settings`` agrees with it.
+
+    Parameters
+    ----------
+    key : str
+        Environment variable name, e.g. ``"REDUCE_NOISE"``.
+    value : str
+        Raw value to store, e.g. ``"0"``.
+
+    Returns
+    -------
+    bool
+        True when the value was written, False if ``.env`` could not be
+        updated (the caller should not treat the toggle as remembered).
+    """
+    path: Path = env_file_path()
+
+    if _DOTENV_AVAILABLE:
+        try:
+            path.touch(exist_ok=True)
+            set_key(str(path), key, value)
+            os.environ[key] = value
+            return True
+        except OSError as exc:
+            logger.error("Could not update %s: %s", path, exc)
+            return False
+
+    # Fallback used when python-dotenv is not installed.
+    try:
+        lines: List[str] = []
+        if path.exists():
+            lines = path.read_text(encoding="utf-8").splitlines()
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        replaced: bool = False
+        for i, line in enumerate(lines):
+            if pattern.match(line):
+                lines[i] = f"{key}={value}"
+                replaced = True
+        if not replaced:
+            lines.append(f"{key}={value}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.environ[key] = value
+        return True
+    except OSError as exc:
+        logger.error("Could not update %s: %s", path, exc)
+        return False
 
 
 @dataclass(frozen=True)
@@ -174,7 +277,6 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
             load_dotenv(env_file)
     else:
         load_env_file()
-
     getenv = os.getenv
     return Settings(
         output_dir=getenv("OUTPUT_DIR", "./recordings"),

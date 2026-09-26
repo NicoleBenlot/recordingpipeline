@@ -22,7 +22,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from .config import Settings
+from .config import Settings, env_file_path, set_env_value
 from .archiver import AudioArchiver, SaveTarget
 from .recorder import AudioRecorder
 from .filter import AudioFilter
@@ -210,10 +210,11 @@ class PipelineApp:
             main,
             text="Background noise reduction",
             variable=self.reduce_noise_var,
+            command=self._on_reduce_noise_toggle,
         ).grid(row=6, column=0, sticky="w", pady=(12, 0))
         self.filter_hint = ttk.Label(
             main,
-            text="Applies automatically after each capture.",
+            text="Applies automatically to every capture. Remembered.",
             foreground="#666",
         )
         self.filter_hint.grid(row=6, column=1, columnspan=2, sticky="w", pady=(12, 0))
@@ -512,6 +513,35 @@ class PipelineApp:
             self.recorder.play(self.current_audio)
         except Exception as exc:
             messagebox.showerror("Playback error", str(exc))
+
+    # ------------------------------------------------------------------
+    def _on_reduce_noise_toggle(self) -> None:
+        """Remember the noise-reduction choice in ``.env``.
+
+        Written to ``REDUCE_NOISE`` so switching it off survives a restart
+        instead of snapping back to automatic denoising on every launch.
+        The choice still applies to every capture in the current session.
+        """
+        enabled: bool = self.reduce_noise_var.get()
+        try:
+            saved: bool = set_env_value(
+                "REDUCE_NOISE", "1" if enabled else "0"
+            )
+        except Exception as exc:
+            logger.error("Could not persist REDUCE_NOISE: %s", exc)
+            saved = False
+        if not saved:
+            messagebox.showwarning(
+                "Could not save setting",
+                f"Could not update {env_file_path()}.\n"
+                "This choice will reset when you close the app.",
+            )
+            return
+        self._set_status(
+            "Background noise reduction "
+            f"{'on' if enabled else 'off'} – saved to .env",
+            "#555",
+        )
 
     # ------------------------------------------------------------------
     def _on_denoise_click(self) -> None:

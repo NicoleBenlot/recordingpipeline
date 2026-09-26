@@ -12,10 +12,10 @@ audio words into numeric `.mp3` files with an INI-style index.
 
 ## Non-obvious setup / gotchas
 
-- **MP3 encoding needs `ffmpeg` on PATH** (pydub). Not listed in requirements. `ensure_ffmpeg_on_path()` in `archiver.py` auto-locates the WinGet `Gyan.FFmpeg` bin dir and prepends it to `PATH` on init, so it works from a fresh shell. On a non-WinGet install, ffmpeg must already be on PATH.
+- **ffmpeg is required for *every* save, including `wav`** — pydub routes all `AudioSegment.export(...)` calls through the ffmpeg binary, so there is no codec-free fallback. Not listed in requirements. `ensure_ffmpeg_on_path()` in `archiver.py` checks `PATH` first, then scans the WinGet `Gyan.FFmpeg` install (matching any `ffmpeg-*` build variant, not just `full_build`) and prepends its `bin` dir to the process `PATH`, so it works from a fresh shell. If it finds nothing it logs a warning naming the real failure (`[WinError 2]`) instead of letting pydub fail opaquely. On a non-WinGet install, ffmpeg must already be on `PATH`.
 - **Windows console defaults to cp1252** and crashes (`UnicodeEncodeError`) on the box-drawing glyphs in the CLI. `_ensure_utf8()` in `audio_pipeline/__main__.py` must run before any print.
-- **`__init__.py` eagerly imports every module**, so importing anything from the package requires all audio deps (sounddevice, numpy, noisereduce, pydub) to be installed.
-- `.env` is loaded via `python-dotenv` in `config.py`; `.env` is gitignored. Copy `.env.example` to `.env` to configure.
+- **`sounddevice` and `noisereduce` are imported lazily**, inside `recorder._sd()` and `AudioFilter.reduce_noise` respectively. Both are slow to import (PortAudio init, scipy) and delayed the GUI window appearing. `import audio_pipeline` therefore no longer pulls them in — keep it that way, and do not add a module-level `import sounddevice`/`import noisereduce` back. `numpy` and `pydub` are still eager.
+- `.env` is loaded via `python-dotenv` in `config.py`; `.env` is gitignored. Copy `.env.example` to `.env` to configure. `python-dotenv` is treated as optional, but without it `load_settings` ignores `.env` entirely.
 
 ## Architecture
 
@@ -37,6 +37,7 @@ Each concern is one module under `audio_pipeline/`:
 - `INDEX_FILENAME` names the index file (e.g. `index.txt`).
 - `INDEX_START_NUMBER` sets where auto-increment begins; `INDEX_PREFIX_LENGTH` (default 2) sets section grouping width.
 - `MULTI_SPEAKER` (default 0) picks the dupe policy; `REDUCE_NOISE` (default 1) toggles background noise reduction. CLI overrides: `--multi-speaker`, `--no-filter`.
+- `REDUCE_NOISE` is the one setting the GUI **writes back**: the checkbox calls `config.set_env_value(...)`, which edits `.env` in place (comments and other keys preserved) so the choice survives a restart. `MULTI_SPEAKER` is deliberately session-only — the checkbox always starts from `.env`, defaulting to off.
 
 ## Index format (critical — do not regress)
 
@@ -91,4 +92,4 @@ it from the UI variable and push it to the archiver before any
 Dupe + filter controls:
 - **Keep every take (multi-speaker)** checkbutton → `_apply_multi_speaker()` pushes it onto `archiver.multi_speaker` and enables/disables the take picker.
 - **Overwrite take** dropdown lists the takes already indexed for the word in the **Word to record** field, newest last and preselected. Populated by `_refresh_overwrite_choices()` on word `FocusOut`, after every save, and after `clean()`. `_selected_overwrite()` re-validates the choice against the index and returns `None` (fall back to the latest) if it went stale, so a stale dropdown can never clobber the wrong file.
-- **Background noise reduction** checkbutton → when on, `_on_capture_done` denoises each capture automatically; when off the raw signal is archived. The manual **Denoise** button works either way.
+- **Background noise reduction** checkbutton → when on, `_on_capture_done` denoises each capture automatically; when off the raw signal is archived. The manual **Denoise** button works either way. `_on_reduce_noise_toggle` persists the choice to `REDUCE_NOISE` via `config.set_env_value` (and warns if the write fails, since the setting would otherwise silently reset).

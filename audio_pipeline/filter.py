@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-import noisereduce as nr
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+# ``noisereduce`` pulls in scipy at import time, which is slow enough to
+# delay the GUI window appearing.  Import it on first use instead of at
+# module import time (see :meth:`AudioFilter.reduce_noise`).
 
 
 class AudioFilter:
@@ -54,6 +57,8 @@ class AudioFilter:
         logger.info(
             "Applying noise reduction  prop_decrease=%.2f", self.prop_decrease
         )
+        import noisereduce as nr
+
         try:
             reduced: np.ndarray = nr.reduce_noise(
                 y=audio,
