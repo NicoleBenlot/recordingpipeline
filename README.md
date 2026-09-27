@@ -9,9 +9,11 @@ archiving audio assets with a structured text index.
   (NumPy float32), and live playback.
 - **AudioFilter** — `noisereduce` spectral-gate noise reduction for removing
   structural background hums and hiss.
+- **SentenceSegmenter** — cuts a recorded sentence into one audio clip per
+  word by finding the pauses in the waveform (numpy only, no speech model).
 - **AudioArchiver** — converts processing buffers to highly compressed `.mp3`
-  via `pydub`, auto-creates output directories, and appends timestamped JSON
-  lines to `audio_index.txt`.
+  via `pydub`, auto-creates output directories, and writes the structured
+  `audio_index.txt`.
 - **AudioPipeline** — orchestrates *Record → Filter → Review → Archive* with an
   interactive confirmation loop (play / re-record / re-filter / save / discard).
 - **PipelineApp (GUI)** — Tkinter interface with tap-to-record / tap-again-to-stop,
@@ -51,6 +53,11 @@ Key settings (all optional — sensible defaults are used if omitted):
 | `FILTER_AGGRESSIVE_PROP` | Strength for re-filter passes |
 | `MAX_FILTER_PASSES` | Max passes before auto-commit |
 | `MP3_BITRATE` | Target MP3 bitrate |
+| `SEGMENT_SILENCE_RATIO` | Sentence mode: energy below this fraction of the loudest frame is a pause |
+| `SEGMENT_NOISE_MULTIPLIER` | Sentence mode: gate floor as a multiple of the noise floor |
+| `SEGMENT_MIN_WORD_SECONDS` | Sentence mode: shorter regions are absorbed into a neighbour |
+| `SEGMENT_MIN_GAP_SECONDS` | Sentence mode: pauses shorter than this do not split a word |
+| `SEGMENT_PAD_MS` | Sentence mode: silence kept either side of each word cut |
 | `LOG_LEVEL` | Logging verbosity |
 
 ## Usage
@@ -72,7 +79,9 @@ python -m audio_pipeline --gui
 ```
 
 In the GUI:
-- Enter the **word** to record.
+- Enter the **word** to record — or a whole **sentence**, which is cut into
+  words automatically (see below). The hint next to the field always says
+  which of the two is about to happen.
 - Set **Start numbering at** to control where auto-increment begins.
 - Tap **Record** to start and tap **Record (Stop)** again to finish (freeform
   duration with a live timer), or check **Fixed duration** to record a set
@@ -83,6 +92,39 @@ In the GUI:
   (with a confirmation prompt).
 
 More commands: `python -m audio_pipeline --help`, `--list-devices`.
+
+### Recording a whole sentence
+
+There is no mode switch — **the text field decides**. Type one word and it
+is saved as one file. Type two or more and the recording is cut into one
+audio file per word on **Save**, with each word on its own line in the
+index.
+
+Type `amo ko amo`, say it, and you get three files and this index:
+
+```ini
+[am]
+amo = 1, 3
+
+[ko]
+ko = 2
+```
+
+The repeated `amo` keeps **both** takes. A sentence never overwrites, so
+the *Keep every take* and *Overwrite take* controls are greyed out while a
+sentence is typed and come back unchanged when you go back to one word.
+
+You say the words one per pause, and the cut points are found from the
+pauses in your voice. Before anything is written, a dialog lists the
+planned cut for every word with its start/end time; if the number of pauses
+in the audio did not match the number of words you typed, that dialog says
+so and you can discard and re-record. If words are being cut in half (or
+run together), adjust `SEGMENT_SILENCE_RATIO` in `.env`.
+
+No speech-to-text model is involved — the word names come from the
+sentence you typed, and the cut points come from the waveform. If words
+are being cut in half (or run together), adjust `SEGMENT_SILENCE_RATIO`
+in `.env`.
 
 ### Interactive review keys
 
@@ -124,7 +166,8 @@ siya = 5
 - Sections use the first `INDEX_PREFIX_LENGTH` letters (default 2).
 - Numbers auto-increment globally; `INDEX_START_NUMBER` sets the starting
   value (useful when continuing an existing library). Re-recording the same
-  word reuses its number.
+  word reuses its number — unless *Keep every take* is on, or the field
+  holds a sentence, which always allocates a new number.
 - Words are sorted alphabetically within each section.
 
 ## Project structure
@@ -138,6 +181,7 @@ audio_pipeline/         # package
 ├── index.py            # AudioIndex (word→number parse/render)
 ├── recorder.py         # AudioRecorder (sounddevice, fixed + streaming)
 ├── filter.py           # AudioFilter (noisereduce)
+├── segmenter.py        # SentenceSegmenter (silence-based word cuts)
 ├── archiver.py         # AudioArchiver (pydub + index)
 ├── gui.py              # PipelineApp (Tkinter tap-to-record UI)
 └── pipeline.py         # AudioPipeline orchestrator
@@ -154,5 +198,7 @@ README.md               # this file
   alphabetically; each entry maps a word to its numeric audio file.
 - Numbers auto-increment across the whole index; re-recording a word reuses
   its existing number instead of creating a duplicate.
+- A sentence adds one number per occurrence, so a word repeated in a
+  sentence accumulates takes (`amo = 1, 3`) instead of overwriting itself.
 - Tune filtering intensity via `prop_decrease`; the pipeline escalates to a
   configurable aggressive weight on subsequent passes.

@@ -382,6 +382,45 @@ class AudioArchiver:
         )
 
     # ------------------------------------------------------------------
+    def resolve_new_take(self, word: str) -> SaveTarget:
+        """Reserve a brand-new number for *word*, ignoring the dupe policy.
+
+        A sentence needs this: every occurrence of a word in a
+        sentence is a distinct recording, so a repeated word must always
+        get its own number rather than replacing an earlier take.
+        Everything else about the target is read from the index exactly
+        as :meth:`resolve_target` would, so ``overwrites`` is always
+        ``False`` — nothing already on disk is destroyed.
+
+        Parameters
+        ----------
+        word : str
+            The word (or repeated word) being archived.
+
+        Returns
+        -------
+        SaveTarget
+            A fresh number plus whatever the word already has indexed.
+
+        Raises
+        ------
+        ValueError
+            If *word* is empty.
+        """
+        normalized: str = word.strip().lower()
+        if not normalized:
+            raise ValueError("Cannot index an empty word.")
+
+        index: AudioIndex = self._load_index()
+        existing: List[int] = index.numbers_for_word(normalized)
+        return SaveTarget(
+            word=normalized,
+            number=index.next_number,
+            existing=existing,
+            is_new=not existing,
+            is_new_take=bool(existing),
+        )
+
     def number_for_word(self, word: str) -> int:
         """Return the audio number for *word* without persisting.
 

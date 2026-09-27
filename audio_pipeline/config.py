@@ -179,7 +179,25 @@ class Settings:
     multi_speaker : bool
         Dupe policy for already-indexed words.  ``True`` keeps every take
         (``amo = 1, 2`` with ``1.mp3`` and ``2.mp3``).  ``False``
-        overwrites the selected take (latest by default).
+        overwrites the selected take (latest by default).  Sentence mode
+        ignores this — see
+        :meth:`~audio_pipeline.archiver.AudioArchiver.resolve_new_take`.
+    segment_silence_ratio : float
+        Sentence mode: energy below this fraction of the loudest analysis
+        frame counts as a pause between words.  Lower cuts more eagerly.
+    segment_noise_multiplier : float
+        Sentence mode: the gate is also held at this multiple of the
+        estimated noise floor, so a quiet recording in a noisy room does
+        not shatter one word into several cuts.
+    segment_min_word_seconds : float
+        Sentence mode: regions shorter than this are absorbed into a
+        neighbour instead of becoming their own word.
+    segment_min_gap_seconds : float
+        Sentence mode: pauses shorter than this are ignored, so a word is
+        not split by its own plosive.
+    segment_pad_ms : float
+        Sentence mode: silence kept either side of each word cut so
+        onsets and offsets are not clipped.
     """
 
     output_dir: str = "./recordings"
@@ -200,6 +218,11 @@ class Settings:
     index_prefix_length: int = 2
     reduce_noise: bool = True
     multi_speaker: bool = False
+    segment_silence_ratio: float = 0.14
+    segment_noise_multiplier: float = 3.0
+    segment_min_word_seconds: float = 0.12
+    segment_min_gap_seconds: float = 0.09
+    segment_pad_ms: float = 40.0
     _extra: dict = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------
@@ -309,4 +332,17 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         ),
         reduce_noise=_as_bool(getenv("REDUCE_NOISE", "1")),
         multi_speaker=_as_bool(getenv("MULTI_SPEAKER", "0")),
+        segment_silence_ratio=_as_float(
+            getenv("SEGMENT_SILENCE_RATIO", "0.14"), 0.14
+        ),
+        segment_noise_multiplier=_as_float(
+            getenv("SEGMENT_NOISE_MULTIPLIER", "3.0"), 3.0
+        ),
+        segment_min_word_seconds=_as_float(
+            getenv("SEGMENT_MIN_WORD_SECONDS", "0.12"), 0.12
+        ),
+        segment_min_gap_seconds=_as_float(
+            getenv("SEGMENT_MIN_GAP_SECONDS", "0.09"), 0.09
+        ),
+        segment_pad_ms=_as_float(getenv("SEGMENT_PAD_MS", "40"), 40.0),
     )

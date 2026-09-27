@@ -11,6 +11,17 @@ populated from the takes already indexed for the word in the entry
 field — selects which existing ``<number>.<ext>`` file to replace.
 *Background noise reduction* toggles the automatic denoise pass that
 runs after each capture; the manual Denoise button is always available.
+
+The entry field takes a word **or** a whole sentence, and decides
+which by itself, with no mode switch to remember. Type one word and
+it is saved as one file under the normal dupe rules. Type two or
+more and saving cuts the recording into one audio file per word
+(found from the pauses in the waveform by
+:class:`~audio_pipeline.segmenter.SentenceSegmenter`), writing each
+word to the index on its own line with a **fresh** number, so a word
+repeated inside one sentence keeps every take instead of overwriting
+itself. The label beside the field and the hint next to it restate
+the plan for whatever is currently typed.
 """
 
 from __future__ import annotations
@@ -18,7 +29,7 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -26,6 +37,11 @@ from .config import Settings, env_file_path, set_env_value
 from .archiver import AudioArchiver, SaveTarget
 from .recorder import AudioRecorder
 from .filter import AudioFilter
+from .segmenter import (
+    SentenceSegmenter,
+    SplitResult,
+    split_sentence_words,
+)
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -65,6 +81,16 @@ class PipelineApp:
         )
         self._start_number_base: int = settings.index_start_number
 
+        # Cuts a recorded sentence into one segment per typed word.
+        self.segmenter: SentenceSegmenter = SentenceSegmenter(
+            sample_rate=settings.sample_rate,
+            silence_ratio=settings.segment_silence_ratio,
+            noise_multiplier=settings.segment_noise_multiplier,
+            min_word_seconds=settings.segment_min_word_seconds,
+            min_gap_seconds=settings.segment_min_gap_seconds,
+            pad_ms=settings.segment_pad_ms,
+        )
+
         # Takes currently indexed for the word in the entry field.
         self._overwrite_numbers: List[int] = []
         self._overwrite_choices: List[str] = []
@@ -86,13 +112,23 @@ class PipelineApp:
         main = ttk.Frame(self.root, padding=16)
         main.grid(row=0, column=0, sticky="nsew")
 
-        # ---- Word / notes --------------------------------------------
-        ttk.Label(main, text="Word to record:").grid(row=0, column=0, sticky="w")
+        # ---- Word / sentence -------------------------------------------
+        # One word is saved as one file; two or more words are treated as
+        # a sentence and cut automatically (see _sync_entry_mode).
+        self.sentence_mode = tk.BooleanVar(value=False)
+        self.word_label = ttk.Label(main, text="Word to record:")
+        self.word_label.grid(row=0, column=0, sticky="w")
         self.word_var = tk.StringVar()
         self.word_entry = ttk.Entry(
             main, textvariable=self.word_var, width=28
         )
-        self.word_entry.grid(row=0, column=1, columnspan=2, sticky="we", padx=6)
+        self.word_entry.grid(row=0, column=1, sticky="w", padx=6)
+        self.plan_hint = ttk.Label(
+            main,
+            text="",
+            foreground="#666",
+        )
+        self.plan_hint.grid(row=0, column=2, columnspan=2, sticky="w")
         # Leaving the field is when the take list can be looked up.
         self.word_entry.bind("<FocusOut>", self._on_word_focus_out)
 
@@ -144,12 +180,13 @@ class PipelineApp:
         self.multi_speaker_var = tk.BooleanVar(
             value=self.archiver.multi_speaker
         )
-        ttk.Checkbutton(
+        self.multi_speaker_cb = ttk.Checkbutton(
             main,
             text="Keep every take (multi-speaker)",
             variable=self.multi_speaker_var,
             command=self._apply_multi_speaker,
-        ).grid(row=3, column=0, sticky="w", pady=(12, 0))
+        )
+        self.multi_speaker_cb.grid(row=3, column=0, sticky="w", pady=(12, 0))
         self.multi_hint = ttk.Label(
             main,
             text="amo = 1, 2 → 1.opus + 2.opus",
@@ -287,13 +324,75 @@ class PipelineApp:
         )
         self.clean_btn.grid(row=12, column=2, sticky="e")
 
-        # Populate the take picker for any word already in the field.
-        self._refresh_overwrite_choices()
+        # Decide word vs sentence from whatever is already in the field,
+        # then keep deciding it as the field changes.
+        self._sync_entry_mode(refresh=True)
+        self.word_var.trace_add("write", self._on_word_typed)
+
+    # ------------------------------------------------------------------
+    def _on_word_typed(self, *_args: object) -> None:
+        """Re-decide word vs sentence as the field is edited."""
+        self._sync_entry_mode()
+
+    # ------------------------------------------------------------------
+    def _sync_entry_mode(self, refresh: bool = False) -> None:
+        """Decide automatically between one word and a whole sentence.
+
+        The entry field itself decides, with no mode switch to remember:
+        two or more words means a sentence, so saving cuts the recording
+        into one file per word and indexes each word on its own line.  A
+        single word keeps the normal overwrite / take-picker behaviour.
+
+        The controls that only mean something for one word are switched
+        off for a sentence: the multi-speaker checkbox (every occurrence
+        of a word already gets a fresh number) and the take picker
+        (nothing is ever overwritten).
+
+        Parameters
+        ----------
+        refresh : bool
+            Force a re-read of the index for the take picker.  Keystrokes
+            leave this off so typing does not hit the disk; the read
+            happens on focus-out and around saves instead.
+        """
+        words: List[str] = split_sentence_words(self.word_var.get())
+        sentence: bool = len(words) >= 2
+        flipped: bool = self.sentence_mode.get() != sentence
+        self.sentence_mode.set(sentence)
+
+        self.word_label.config(
+            text="Sentence:" if sentence else "Word to record:"
+        )
+        self.multi_speaker_cb.state(["disabled"] if sentence else ["!disabled"])
+        self.multi_hint.config(
+            text="Every word gets a new number."
+            if sentence
+            else "amo = 1, 2 → 1.opus + 2.opus"
+        )
+        self.plan_hint.config(text=self._plan_text(words, sentence))
+
+        if sentence:
+            self._set_overwrite_choices([])
+        elif refresh or flipped:
+            self._refresh_overwrite_choices()
+
+    @staticmethod
+    def _plan_text(words: List[str], sentence: bool) -> str:
+        """Describe what saving the current field content will do."""
+        if not words:
+            return "Type a word, or several to cut a sentence into words."
+        if sentence:
+            count: int = len(words)
+            return (
+                f"{count} words → cut into {count} files, "
+                "one number each."
+            )
+        return "1 word → saved as a single file."
 
     # ------------------------------------------------------------------
     def _on_word_focus_out(self, _event: Optional[tk.Event] = None) -> None:
-        """Refresh the take picker when the word field loses focus."""
-        self._refresh_overwrite_choices()
+        """Re-sync the mode and refresh the take picker on focus loss."""
+        self._sync_entry_mode(refresh=True)
 
     # ------------------------------------------------------------------
     def _refresh_overwrite_choices(self) -> None:
@@ -301,10 +400,11 @@ class PipelineApp:
 
         Reads every take already indexed for that word so the dropdown
         can offer each ``<number>.<ext>`` file as an overwrite target.
-        The latest take is preselected.
+        The latest take is preselected.  A sentence has no takes to
+        choose from, so the picker stays empty.
         """
         word: str = self.word_var.get().strip()
-        if not word:
+        if not word or self.sentence_mode.get():
             self._set_overwrite_choices([])
             return
         try:
@@ -334,7 +434,9 @@ class PipelineApp:
             self.overwrite_var.set("")
             self.overwrite_box.state(["disabled"])
             self.overwrite_hint.config(
-                text="No takes indexed for this word yet."
+                text="Each word of a sentence gets a new number."
+                if self.sentence_mode.get()
+                else "No takes indexed for this word yet."
             )
             return
 
@@ -411,11 +513,13 @@ class PipelineApp:
 
     # ------------------------------------------------------------------
     def _start_recording(self) -> None:
-        """Begin capturing audio (validates the word and mode first)."""
-        word: str = self.word_var.get().strip()
-        if not word:
+        """Begin capturing audio (validates the word field first)."""
+        if not split_sentence_words(self.word_var.get()):
             messagebox.showwarning(
-                "Missing word", "Enter the word being recorded first."
+                "Missing word",
+                "Enter the word or sentence you are about to record.\n\n"
+                "One word is saved as one file. Several words are said as a "
+                "sentence and cut into one file per word.",
             )
             return
 
@@ -523,10 +627,19 @@ class PipelineApp:
         self.filtered = denoised
         self.record_btn.config(text="●  Record", state=["normal"])
         note: str = " (denoised)" if denoised else ""
-        self._set_status(
-            f"Captured {duration:.1f}s{note}. Review, then Save or Discard.",
-            "#0a0",
-        )
+        words: List[str] = split_sentence_words(self.word_var.get())
+        if len(words) >= 2:
+            self._set_status(
+                f"Captured {duration:.1f}s{note} — will be cut into "
+                f"{len(words)} word file(s) on Save.",
+                "#0a0",
+            )
+        else:
+            self._set_status(
+                f"Captured {duration:.1f}s{note}. "
+                "Review, then Save or Discard.",
+                "#0a0",
+            )
         self._enable_review()
 
     # ------------------------------------------------------------------
@@ -652,20 +765,30 @@ class PipelineApp:
 
     # ------------------------------------------------------------------
     def _on_save_click(self) -> None:
-        """Archive the current buffer and index it under the word."""
+        """Archive the current buffer, cutting it if the field is a sentence.
+
+        The entry field decides the shape of the save: two or more words
+        go to :meth:`_save_sentence` (one file and one index line per
+        word), a single word takes the overwrite / take-picker path.
+        """
         if self.current_audio is None:
-            return
-        word: str = self.word_var.get().strip()
-        if not word:
-            messagebox.showwarning("Missing word", "Enter the word to record.")
             return
         # Apply the start-number the user set in the field.
         self._apply_start_number()
         # Apply the format selected in the dropdown.
         self._apply_format()
+
+        if self.sentence_mode.get():
+            self._save_sentence()
+            return
+
+        word: str = self.word_var.get().strip()
+        if not word:
+            messagebox.showwarning("Missing word", "Enter the word to record.")
+            return
         # Apply the dupe policy and refresh the take list.
         self._apply_multi_speaker()
-        self._refresh_overwrite_choices()
+        self._sync_entry_mode(refresh=True)
         try:
             target: SaveTarget = self.archiver.resolve_target(
                 word, self._selected_overwrite(word)
@@ -700,6 +823,129 @@ class PipelineApp:
         self.timer_label.config(text="00:00.0")
         # The take list just changed; repopulate the picker.
         self._refresh_overwrite_choices()
+
+    # ------------------------------------------------------------------
+    def _save_sentence(self) -> None:
+        """Cut the recording into one file per word and index them all.
+
+        Each occurrence is archived with a fresh number via
+        :meth:`AudioArchiver.resolve_new_take`, so repeating a word inside
+        one sentence keeps every take rather than overwriting the first.
+        The archiver's resolve → save → register sequence is repeated per
+        word, because every call re-reads the index from disk.
+        """
+        buffer: Optional[np.ndarray] = self.current_audio
+        if buffer is None:
+            return
+        words: List[str] = split_sentence_words(self.word_var.get())
+        if not words:
+            messagebox.showwarning(
+                "Missing sentence", "Type the sentence you recorded."
+            )
+            return
+
+        self._set_status(
+            f"Finding {len(words)} word cut(s) in the recording…", "#00a"
+        )
+        self.root.update_idletasks()
+        try:
+            result: SplitResult = self.segmenter.split(buffer, len(words))
+        except Exception as exc:
+            logger.error("Could not split the recording: %s", exc)
+            messagebox.showerror("Split failed", str(exc))
+            self._set_status("Split failed.", "#a00")
+            return
+
+        if not self._confirm_sentence(buffer, words, result):
+            self._set_status("Save cancelled.", "#555")
+            return
+
+        ext: str = self.archiver.ext
+        saved: List[Tuple[str, int]] = []
+        for word, segment in zip(words, result.segments):
+            try:
+                target: SaveTarget = self.archiver.resolve_new_take(word)
+                self.archiver.save_as_mp3(
+                    buffer[segment.start:segment.end], str(target.number)
+                )
+                self.archiver.register_word(word, target.number)
+            except Exception as exc:
+                logger.error(
+                    "Failed to archive word %d of %d ('%s'): %s",
+                    len(saved) + 1, len(words), word, exc,
+                )
+                messagebox.showerror(
+                    "Save failed",
+                    f"Failed on word {len(saved) + 1} of {len(words)} "
+                    f"('{word}'):\n\n{exc}",
+                )
+                self._set_status(
+                    f"Saved {len(saved)} of {len(words)} word(s) before the "
+                    "error – the index keeps what was written.",
+                    "#a00",
+                )
+                self._refresh_overwrite_choices()
+                return
+            saved.append((word, target.number))
+
+        self._set_status(
+            f"Split into {len(saved)} file(s): "
+            + ", ".join(f"{w} → {n}.{ext}" for w, n in saved) + ".",
+            "#0a0",
+        )
+        self.current_audio = None
+        self._disable_review()
+        self.timer_label.config(text="00:00.0")
+        self._refresh_overwrite_choices()
+
+    # ------------------------------------------------------------------
+    def _confirm_sentence(
+        self,
+        buffer: np.ndarray,
+        words: List[str],
+        result: SplitResult,
+    ) -> bool:
+        """Show the planned word→cut mapping and ask before archiving.
+
+        Parameters
+        ----------
+        buffer : np.ndarray
+            The recorded sentence, used to turn sample offsets into times.
+        words : List[str]
+            Normalised words typed by the user, in order.
+        result : SplitResult
+            The cuts :meth:`SentenceSegmenter.split` chose for them.
+
+        Returns
+        -------
+        bool
+            True when the user accepts.
+        """
+        rate: int = self.recorder.sample_rate
+        lines: List[str] = []
+        shown = result.segments[:20]
+        for word, segment in zip(words, shown):
+            start: float = segment.start / rate
+            end: float = segment.end / rate
+            lines.append(f"{word}   {start:5.2f}s → {end:5.2f}s")
+        if len(result.segments) > len(shown):
+            lines.append(f"… and {len(result.segments) - len(shown)} more")
+
+        warning: str = ""
+        if result.adjusted:
+            warning = (
+                f"\n\nHeads up: {result.note()}\n"
+                "The cut points may not match where you paused – Discard and "
+                "re-record, or adjust SEGMENT_SILENCE_RATIO in .env."
+            )
+        return messagebox.askyesno(
+            "Split sentence into words",
+            f"{len(words)} word(s) typed, {result.detected} pause(s) found "
+            f"in {len(buffer) / rate:.1f}s of audio.\n\n"
+            + "\n".join(lines)
+            + warning
+            + "\n\nEvery occurrence gets its own file and number. Save these?",
+        )
 
     # ------------------------------------------------------------------
     def _apply_start_number(self) -> None:

@@ -22,6 +22,7 @@ audio words into numeric `.mp3` files with an INI-style index.
 Each concern is one module under `audio_pipeline/`:
 - `recorder.py` — `AudioRecorder` (sounddevice) record + playback
 - `filter.py` — `AudioFilter` (noisereduce spectral gating)
+- `segmenter.py` — `SentenceSegmenter` (silence-based word cuts) + `split_sentence_words`; numpy only, no STT
 - `archiver.py` — `AudioArchiver`: mp3 encode + the word→number index
 - `index.py` — `AudioIndex`: parse/render of the index text
 - `pipeline.py` — `AudioPipeline` orchestrator: Record → Filter → Review → Archive
@@ -38,6 +39,7 @@ Each concern is one module under `audio_pipeline/`:
 - `INDEX_START_NUMBER` sets where auto-increment begins; `INDEX_PREFIX_LENGTH` (default 2) sets section grouping width.
 - `MULTI_SPEAKER` (default 0) picks the dupe policy; `REDUCE_NOISE` (default 1) toggles background noise reduction. CLI overrides: `--multi-speaker`, `--no-filter`.
 - `REDUCE_NOISE` is the one setting the GUI **writes back**: the checkbox calls `config.set_env_value(...)`, which edits `.env` in place (comments and other keys preserved) so the choice survives a restart. `MULTI_SPEAKER` is deliberately session-only — the checkbox always starts from `.env`, defaulting to off.
+- `SEGMENT_*` (all optional, sentence mode only): `SEGMENT_SILENCE_RATIO` (0.14), `SEGMENT_NOISE_MULTIPLIER` (3.0), `SEGMENT_MIN_WORD_SECONDS` (0.12), `SEGMENT_MIN_GAP_SECONDS` (0.09), `SEGMENT_PAD_MS` (40). Read-only — the GUI never writes them.
 
 ## Index format (critical — do not regress)
 
@@ -69,10 +71,49 @@ selects the policy, and it is decided in `resolve_target`, never in `register_wo
 - `register_word(word, number)` is **idempotent** — it only ensures `number` is in the word's list. That single call serves both policies: it appends after a multi-speaker save and is a no-op after an overwrite.
 - `clean()` deletes every number of every word, so a multi-take word loses all of its files.
 
+## Sentence mode (cut a sentence into words)
+
+GUI only, and **not a mode switch** — the word field itself decides, so
+there is nothing to remember to tick. `sentence_mode` is a `BooleanVar`
+that `_sync_entry_mode()` recomputes from
+`len(split_sentence_words(word_var.get())) >= 2`; one word keeps the
+single-word path, two or more go to `_save_sentence`. There is **no
+speech-to-text model** — the user types the sentence in the word field
+(`split_sentence_words` tokenises it, stripping punctuation and
+lowercasing) and speaks it. `SentenceSegmenter.split(audio, word_count)`
+finds the cuts from the waveform alone:
+
+1. 20 ms frames, RMS energy per frame, `peak = p95` / `floor = p20`.
+2. Gate at `max(peak * silence_ratio, floor * noise_multiplier)`. The
+   noise-floor term is what keeps a quiet recording in a noisy room from
+   chattering across the threshold and shattering one word.
+3. `_close_short_gaps` rejoins regions split by a plosive; `_absorb_short`
+   merges regions under `min_word_seconds` into their nearest neighbour.
+4. `_reconcile` forces the count to the typed word count — too many cuts
+   merge at the shortest gap, too few halve the longest cut. `SplitResult`
+   reports `detected` / `merged` / `split` so the GUI can warn.
+5. Each region is padded by `pad_ms` on both sides, so neighbouring cuts
+   overlap slightly rather than clipping an onset.
+
+Every occurrence is archived with a **fresh** number via
+`AudioArchiver.resolve_new_take(word)`, which is `resolve_target` with
+the dupe policy forced aside — `overwrites` is always `False`. So "amo ko
+amo" yields `amo = 1, 3` and `ko = 2`: the repeated word keeps both
+takes and the index still shows it as a word. The multi-speaker checkbox
+and the take picker are disabled in sentence mode because neither
+applies, but they keep their values for when the mode is switched off.
+`_sync_entry_mode()` is re-run from a `word_var` trace, so the label,
+the plan hint, and those two controls follow every keystroke;
+`_sync_entry_mode(refresh=True)` additionally re-reads the index (used on
+`FocusOut` and around saves — never on a keystroke, to keep typing off
+the disk). `_save_sentence` repeats the archiver's resolve → save →
+register sequence per word, since each call re-reads the index (see
+sequencing below).
+
 ## Archiver sequencing (order matters)
 
 `AudioArchiver` reads the index file from disk on **every** call, so:
-1. `resolve_target(word, overwrite=None)` → a `SaveTarget` (number + what already exists), or `numbers_for_word(word)` to just read the take list
+1. `resolve_target(word, overwrite=None)` → a `SaveTarget` (number + what already exists), or `resolve_new_take(word)` to force a fresh number (sentence mode), or `numbers_for_word(word)` to just read the take list
 2. `save_as_mp3(audio, str(target.number))` → writes `<number>.mp3`
 3. `register_word(word, number)` → persists the index
 
@@ -93,3 +134,4 @@ Dupe + filter controls:
 - **Keep every take (multi-speaker)** checkbutton → `_apply_multi_speaker()` pushes it onto `archiver.multi_speaker` and enables/disables the take picker.
 - **Overwrite take** dropdown lists the takes already indexed for the word in the **Word to record** field, newest last and preselected. Populated by `_refresh_overwrite_choices()` on word `FocusOut`, after every save, after `clean()`, and manually via the **Refresh** button (`_on_refresh_takes_click`, which also reports the count in the status line). `_selected_overwrite()` re-validates the choice against the index and returns `None` (fall back to the latest) if it went stale, so a stale dropdown can never clobber the wrong file.
 - **Background noise reduction** checkbutton → when on, `_on_capture_done` denoises each capture automatically; when off the raw signal is archived. The manual **Denoise** button works either way. `_on_reduce_noise_toggle` persists the choice to `REDUCE_NOISE` via `config.set_env_value` (and warns if the write fails, since the setting would otherwise silently reset).
+- No mode switch: the field's own content decides. `_sync_entry_mode()` is called from a `word_var` trace (every keystroke, no disk access) and from `_on_word_focus_out` / `_on_save_click` with `refresh=True` (which also re-reads the index for the take picker). It relabels the field *Sentence* vs *Word to record*, rewrites the plan hint, and disables the two single-word-only controls while a sentence is typed. `_on_save_click` branches to `_save_sentence` instead of the single-word path; it always applies the start-number and format first. `_confirm_sentence` shows the planned word→time mapping and warns when `SplitResult.adjusted` is set, so a bad cut can be discarded and re-recorded.

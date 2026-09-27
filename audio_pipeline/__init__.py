@@ -9,6 +9,7 @@ from .config import Settings, load_settings, load_env_file
 from .index import AudioIndex
 from .recorder import AudioRecorder
 from .filter import AudioFilter
+from .segmenter import SentenceSegmenter, SplitResult, split_sentence_words
 from .archiver import AudioArchiver
 from .pipeline import AudioPipeline
 
@@ -28,6 +29,9 @@ __all__ = [
     "AudioIndex",
     "AudioRecorder",
     "AudioFilter",
+    "SentenceSegmenter",
+    "SplitResult",
+    "split_sentence_words",
     "AudioArchiver",
     "AudioPipeline",
     "PipelineApp",
