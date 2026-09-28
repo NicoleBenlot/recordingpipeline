@@ -12,3 +12,10 @@ audioop-lts>=0.2
 
 # Environment / configuration loading (.env)
 python-dotenv>=1.0.0
+
+# Sentence mode: forced alignment (MMS model via torchaudio).
+# Only imported when alignment runs; first use downloads a ~1.2 GB model.
+torch>=2.5
+torchaudio>=2.5
+
+# downloaded ffmpeg
